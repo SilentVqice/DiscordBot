@@ -167,9 +167,11 @@ async def on_message(message):
     if bot.user in message.mentions:
         await message.channel.send("Hewwo :3")
 
+    handled_mentions = set()
     for user in message.mentions:
-        if user.id in special_user_responses:
+        if user.id in special_user_responses and user.id not in handled_mentions:
             await message.channel.send(f"{special_user_responses[user.id]}")
+            handled_mentions.add(user.id)
     await bot.process_commands(message)
 
 @bot.event
@@ -567,8 +569,8 @@ async def rps(ctx):
 
 # CONNECT 4 --------------------------------------------------------------------------------------------------------
 class Connect4Button(discord.ui.Button):
-    def __init__(self, column: int):
-        super().__init__(style=discord.ButtonStyle.secondary, label=str(column + 1), row=0)
+    def __init__(self, column: int, row: int):
+        super().__init__(style=discord.ButtonStyle.secondary, label=str(column + 1), row=row)
         self.column = column
 
     async def callback(self, interaction: discord.Interaction):
@@ -589,7 +591,8 @@ class Connect4View(discord.ui.View):
         self.message = None
         self.lock = asyncio.Lock()
         for col in range(self.COLS):
-            self.add_item(Connect4Button(col))
+            button_row = 0 if col < 5 else 1
+            self.add_item(Connect4Button(col, button_row))
 
     def render_board(self):
         pieces = {0: "⚫", 1: "🔴", 2: "🟡"}
