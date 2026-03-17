@@ -438,6 +438,7 @@ async def trivia(ctx):
         await ctx.send("✅ Correct!")
     else:
         await ctx.send(f"❌ Wrong! The correct answer was **{correct}**.")
+    return None
 
 # FLAG TRIVIA ------------------------------------------------------------------------------------------------------
 intents = discord.Intents.default()
@@ -513,7 +514,6 @@ async def flag(ctx):
     except Exception as e:
         await ctx.send(f"Error: {e}")
 
-################################################################################
 
 
 
