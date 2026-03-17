@@ -172,6 +172,16 @@ async def on_message(message):
             await message.channel.send(f"{special_user_responses[user.id]}")
     await bot.process_commands(message)
 
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, commands.BadArgument):
+        return await ctx.send("I couldn't read that user. Try `;connect4` or `;connect4 @user`.")
+    if isinstance(error, commands.MissingRequiredArgument):
+        return await ctx.send("Missing argument for that command.")
+    await ctx.send(f"Command error: {error}")
+
 # WELCOME MESSAGE --------------------------------------------------------------------------------------------------
 @bot.event
 async def on_member_join(member):
@@ -697,7 +707,7 @@ class Connect4View(discord.ui.View):
             await self.message.edit(embed=timeout_embed, view=self)
 
 @bot.command(aliases=["c4"])
-async def connect4(ctx, opponent: discord.Member = None):
+async def connect4(ctx, opponent: discord.User = None):
     if opponent is None:
         opponent = bot.user
     if opponent.bot and opponent != bot.user:
