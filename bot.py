@@ -1,5 +1,3 @@
-from typing import Any
-
 import discord
 import logging
 import os
@@ -8,14 +6,10 @@ import asyncio
 import aiohttp
 import random
 import html
-import requests
-from discord.ext import commands
-from discord import app_commands
-from discord.ext.commands import Bot, Command
+from discord.ext.commands import Bot
 from dotenv import load_dotenv
-from discord.ext import commands
 from discord import AllowedMentions
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
@@ -437,7 +431,7 @@ async def trivia(ctx):
 
     try:
         msg = await bot.wait_for("message", timeout=20, check=check)
-    except:
+    except asyncio.TimeoutError:
         return await ctx.send(f"⏰ Time's up! The correct answer was **{correct}**.")
 
     if answer_map[msg.content.upper()] == correct:
@@ -493,9 +487,6 @@ async def flag(ctx):
                 hint_sent = True
 
         asyncio.create_task(scheduled_hint())
-
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel
 
         start_time = asyncio.get_event_loop().time()
 
