@@ -550,4 +550,7 @@ async def rps(ctx):
         await ctx.send("❌ You lose!")
     return None
 
+
+
+
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
