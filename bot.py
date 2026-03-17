@@ -514,7 +514,40 @@ async def flag(ctx):
     except Exception as e:
         await ctx.send(f"Error: {e}")
 
+# RPS --------------------------------------------------------------------------------------------------------------
+@bot.command()
+async def rps(ctx):
+    choices = ["rock", "paper", "scissors"]
 
+    await ctx.send("🪨 📄 ✂️ Type **Rock**, **Paper**, or **Scissors**!")
 
+    def check(m):
+        return (
+            m.author == ctx.author
+            and m.channel == ctx.channel
+            and m.content.lower() in choices
+        )
+
+    try:
+        msg = await bot.wait_for("message", timeout=15, check=check)
+    except asyncio.TimeoutError:
+        return await ctx.send("⏰ You took too long!")
+
+    user_choice = msg.content.lower()
+    bot_choice = random.choice(choices)
+
+    await ctx.send(f"🤖 I chose **{bot_choice}**!")
+
+    if user_choice == bot_choice:
+        await ctx.send("🤝 It's a tie!")
+    elif(
+        (user_choice == "rock" and bot_choice == "scissors") or
+        (user_choice == "paper" and bot_choice == "rock") or
+        (user_choice == "scissors" and bot_choice == "paper")
+    ):
+        await ctx.send("✅ You win!")
+    else:
+        await ctx.send("❌ You lose!")
+    return None
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
