@@ -163,6 +163,10 @@ async def on_message(message):
         979934316429738035: "Mwah",
         812269541731074078: "#sniped by snow (Farzo is your nightmare)"
     }
+
+    if bot.user in message.mentions:
+        await message.channel.send("Hewwo :3")
+
     for user in message.mentions:
         if user.id in special_user_responses:
             await message.channel.send(f"{special_user_responses[user.id]}")
@@ -551,6 +555,7 @@ async def rps(ctx):
         await ctx.send("❌ You lose!")
     return None
 
+# CONNECT 4 --------------------------------------------------------------------------------------------------------
 class Connect4Button(discord.ui.Button):
     def __init__(self, column: int):
         super().__init__(style=discord.ButtonStyle.secondary, label=str(column + 1), row=0)
