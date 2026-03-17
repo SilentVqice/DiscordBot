@@ -54,7 +54,8 @@ async def helpcommands(ctx):
         "Fun": {
             ";kitty": "Sends a random cat image. - ;kitty",
             ";trivia": "Starts a trivia question. - ;trivia",
-            ";flag": "Starts a country flag trivia question. - ;flag"
+            ";flag": "Starts a country flag trivia question. - ;flag",
+            ";connect4": "Starts an interactive Connect 4 game. - ;connect4 [@user]"
         }
     }
 
@@ -550,7 +551,160 @@ async def rps(ctx):
         await ctx.send("❌ You lose!")
     return None
 
+class Connect4Button(discord.ui.Button):
+    def __init__(self, column: int):
+        super().__init__(style=discord.ButtonStyle.secondary, label=str(column + 1), row=0)
+        self.column = column
 
+    async def callback(self, interaction: discord.Interaction):
+        await self.view.play_turn(interaction, self.column)
 
+class Connect4View(discord.ui.View):
+    ROWS = 6
+    COLS = 7
+
+    def __init__(self, author: discord.Member, opponent: discord.Member):
+        super().__init__(timeout=180)
+        self.author = author
+        self.opponent = opponent
+        self.players = {1: author, 2: opponent}
+        self.is_bot_game = opponent.id == bot.user.id
+        self.current = 1
+        self.board = [[0 for _ in range(self.COLS)] for _ in range(self.ROWS)]
+        self.message = None
+        self.lock = asyncio.Lock()
+        for col in range(self.COLS):
+            self.add_item(Connect4Button(col))
+
+    def render_board(self):
+        pieces = {0: "⚫", 1: "🔴", 2: "🟡"}
+        lines = []
+        for row in self.board:
+            lines.append("".join(pieces[cell] for cell in row))
+        lines.append("1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣")
+        return "\n".join(lines)
+
+    def get_embed(self, title="Connect 4", description=None):
+        embed = discord.Embed(
+            title=title,
+            description=description if description else self.render_board(),
+            colour=discord.Color.red() if self.current == 1 else discord.Color.gold()
+        )
+        if not description:
+            current_player = self.players[self.current]
+            piece = "🔴" if self.current == 1 else "🟡"
+            embed.add_field(name="Turn", value=f"{current_player.mention} {piece}", inline=False)
+            embed.add_field(name="Players", value=f"🔴 {self.author.mention} vs 🟡 {self.opponent.mention}", inline=False)
+        return embed
+
+    def available_columns(self):
+        return [c for c in range(self.COLS) if self.board[0][c] == 0]
+
+    def drop_piece(self, col, player):
+        for row in range(self.ROWS - 1, -1, -1):
+            if self.board[row][col] == 0:
+                self.board[row][col] = player
+                return row
+        return None
+
+    def check_winner(self, row, col, player):
+        directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
+        for dr, dc in directions:
+            count = 1
+            for direction in (1, -1):
+                r = row + dr * direction
+                c = col + dc * direction
+                while 0 <= r < self.ROWS and 0 <= c < self.COLS and self.board[r][c] == player:
+                    count += 1
+                    r += dr * direction
+                    c += dc * direction
+            if count >= 4:
+                return True
+        return False
+
+    def disable_all(self):
+        for child in self.children:
+            child.disabled = True
+
+    async def finish_game(self, winner=None):
+        self.disable_all()
+        if winner is None:
+            title = "Connect 4 - Draw"
+            desc = f"{self.render_board()}\n\nIt's a draw!"
+        else:
+            title = "Connect 4 - Winner"
+            desc = f"{self.render_board()}\n\n{winner.mention} wins!"
+        await self.message.edit(embed=self.get_embed(title=title, description=desc), view=self)
+        self.stop()
+
+    async def bot_turn(self):
+        await asyncio.sleep(1)
+        valid = self.available_columns()
+        if not valid:
+            await self.finish_game()
+            return
+        col = random.choice(valid)
+        row = self.drop_piece(col, 2)
+        if self.check_winner(row, col, 2):
+            await self.finish_game(winner=self.opponent)
+            return
+        if not self.available_columns():
+            await self.finish_game()
+            return
+        self.current = 1
+        await self.message.edit(embed=self.get_embed(), view=self)
+
+    async def play_turn(self, interaction: discord.Interaction, column: int):
+        async with self.lock:
+            if interaction.user.id not in (self.author.id, self.opponent.id):
+                return await interaction.response.send_message("This game is not yours.", ephemeral=True)
+
+            if interaction.user.id != self.players[self.current].id:
+                return await interaction.response.send_message("It's not your turn.", ephemeral=True)
+
+            row = self.drop_piece(column, self.current)
+            if row is None:
+                return await interaction.response.send_message("That column is full.", ephemeral=True)
+
+            if self.check_winner(row, column, self.current):
+                await interaction.response.defer()
+                await self.finish_game(winner=self.players[self.current])
+                return
+
+            if not self.available_columns():
+                await interaction.response.defer()
+                await self.finish_game()
+                return
+
+            self.current = 2 if self.current == 1 else 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+            if self.is_bot_game and self.current == 2:
+                await self.bot_turn()
+
+    async def on_timeout(self):
+        self.disable_all()
+        if self.message:
+            timeout_embed = self.get_embed(
+                title="Connect 4 - Timed Out",
+                description=f"{self.render_board()}\n\nGame ended due to inactivity."
+            )
+            await self.message.edit(embed=timeout_embed, view=self)
+
+@bot.command(aliases=["c4"])
+async def connect4(ctx, opponent: discord.Member = None):
+    if opponent is None:
+        opponent = bot.user
+    if opponent.bot and opponent != bot.user:
+        return await ctx.send("You can only challenge a real user or me.")
+    if opponent == ctx.author:
+        return await ctx.send("You can't challenge yourself.")
+
+    view = Connect4View(ctx.author, opponent)
+    message = await ctx.send(embed=view.get_embed(), view=view)
+    view.message = message
+
+    if view.is_bot_game and view.current == 2:
+        await view.bot_turn()
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
