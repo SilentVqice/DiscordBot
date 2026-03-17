@@ -517,5 +517,4 @@ async def flag(ctx):
 
 
 
-
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
