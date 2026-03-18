@@ -10,12 +10,14 @@ import html
 import sys
 import time
 import yt_dlp as youtube_dl
+import yt_dlp.utils as ytdlp_utils
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageFont, ImageOps
 from discord.ext.commands import Bot
 from dotenv import load_dotenv
 from discord import AllowedMentions
 from discord.ext import commands
+from typing import Any, cast
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
@@ -41,11 +43,6 @@ def voice_runtime_info():
     except Exception as e:
         dave_status = f"missing ({e.__class__.__name__})"
     return f"Runtime: `{sys.executable}` | nacl: {nacl_status} | davey: {dave_status}"
-
-# BOT START ---------------------------------------------------------------------------------------------------------
-@bot.event
-async def on_ready():
-    print(f"We are ready to go in, {bot.user.name}! :3")
 
 ############################################ R.I.C.H  P.R.E.S.E.N.C.E. ############################################
 
@@ -121,35 +118,69 @@ async def setup_reaction_message():
 # REACTION ROLES ADD ------------------------------------------------------------------------------------------------
 @bot.event
 async def on_raw_reaction_add(payload):
+    if payload.guild_id is None:
+        return
+
     guild = bot.get_guild(payload.guild_id)
+    if guild is None:
+        return
+
     member = guild.get_member(payload.user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(payload.user_id)
+        except discord.NotFound:
+            return
+        except discord.HTTPException:
+            return
 
     if member.bot:
         return
     emoji_to_role = {
         "<:bed:1483254053227200584>": 1483256278565523608
     }
-    if str(payload.emoji) in emoji_to_role:
-        role = guild.get_role(emoji_to_role[str(payload.emoji)])
-        if role:
-            await member.add_roles(role)
-            print(f"Added {role.name} to {member.name}")
+
+    role_id = emoji_to_role.get(str(payload.emoji))
+    if role_id is None:
+        return
+
+    role = guild.get_role(emoji_to_role[str(payload.emoji)])
+    if role:
+        await member.add_roles(role)
+        print(f"Added {role.name} to {member.name}")
 
 # REACTION ROLES REMOVE ---------------------------------------------------------------------------------------------
 @bot.event
 async def on_raw_reaction_remove(payload):
+    if payload.guild_id is None:
+        return
+
     guild = bot.get_guild(payload.guild_id)
-    member = guild.get_member(payload.user_id)
+    if guild is None:
+            return
+
+    try:
+        member = await guild.fetch_member(payload.user_id)
+    except discord.NotFound:
+        return
+    except discord.HTTPException:
+        return
+
     if member.bot:
         return
+
     emoji_to_role = {
         "<:bed:1483254053227200584>": 1483256278565523608
     }
-    if str(payload.emoji) in emoji_to_role:
-        role = guild.get_role(emoji_to_role[str(payload.emoji)])
-        if role:
-            await member.remove_roles(role)
-            print(f"Removed {role.name} from {member.name}")
+
+    role_id = emoji_to_role.get(str(payload.emoji))
+    if role_id is None:
+        return
+
+    role = guild.get_role(role_id)
+    if role:
+        await member.remove_roles(role)
+        print(f"Removed {role.name} from {member.name}")
 
 # MEMBER COUNT ------------------------------------------------------------------------------------------------------
 member_count_channel_id = 1483268373902000128
@@ -160,18 +191,15 @@ async def update_member_count(guild):
         await channel.edit(name=f"Members: {guild.member_count}")
 
 @bot.event
-async def on_member_join(member):
-    await update_member_count(member.guild)
-
-@bot.event
 async def on_member_remove(member):
     await update_member_count(member.guild)
 
 @bot.event
 async def on_ready():
-    print(f"{bot.user.name} is online!")
+    print(f"{bot.user.name} is online! :3")
     for guild in bot.guilds:
         await update_member_count(guild)
+    await setup_reaction_message()
 
 # USER MENTION FUN X3 ----------------------------------------------------------------------------------------------
 @bot.event
@@ -217,7 +245,7 @@ font_path = assets_dir / "DejaVuSans-Bold.ttf"
 
 card_width = 1000
 card_height = 350
-avatar_size = 180
+#avatar_size = 180
 
 def load_font(size: int):
     if font_path.exists():
@@ -228,17 +256,17 @@ async def fetch_avatar_bytes(member: discord.Member) -> bytes:
     avatar_asset = member.display_avatar.replace(size=256)
     return await avatar_asset.read()
 
-def create_circular_avatar(avatar_bytes: bytes, size: int) -> Image.Image:
-    avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
-    avatar = ImageOps.fit(avatar, (size, size), method=Image.Resampling.LANCZOS)
+#def create_circular_avatar(avatar_bytes: bytes, size: int) -> Image.Image:
+#    avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
+#    avatar = ImageOps.fit(avatar, (size, size), method=Image.Resampling.LANCZOS)
 
-    mask = Image.new("L", avatar.size, 0)
-    draw = ImageDraw.Draw(mask)
-    draw.ellipse((0, 0, size, size), fill=255)
+#    mask = Image.new("L", avatar.size, 0)
+#    draw = ImageDraw.Draw(mask)
+#    draw.ellipse((0, 0, size, size), fill=255)
 
-    circular_avatar = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    circular_avatar.paste(avatar, (0,0), mask)
-    return circular_avatar
+#    circular_avatar = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+#    circular_avatar.paste(avatar, (0,0), mask)
+#    return circular_avatar
 
 def fit_background() -> Image.Image:
     background = Image.open(background_path).convert("RGBA")
@@ -248,15 +276,15 @@ def fit_background() -> Image.Image:
         method=Image.Resampling.LANCZOS
     )
 
-def add_overlay(base: Image.Image) -> None:
-    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    draw.rounded_rectangle(
-        (30, 30, card_width - 30, card_height - 30),
-        radius = 30,
-        fill=(0, 0, 0, 120),
-    )
-    base.alpha_composite(overlay)
+#def add_overlay(base: Image.Image) -> None:
+#    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+#    draw = ImageDraw.Draw(overlay)
+#    draw.rounded_rectangle(
+#        (30, 30, card_width - 30, card_height - 30),
+#        radius = 30,
+#        fill=(0, 0, 0, 120),
+#    )
+#    base.alpha_composite(overlay)
 
 def build_welcome_card(avatar_bytes: bytes, member: discord.Member) -> io.BytesIO:
     card = fit_background()
@@ -268,6 +296,7 @@ def build_welcome_card(avatar_bytes: bytes, member: discord.Member) -> io.BytesI
 
 @bot.event
 async def on_member_join(member):
+    await update_member_count(member.guild)
     channel = member.guild.get_channel(1483276233818112202)
     if channel is None:
         return
@@ -438,7 +467,9 @@ def parse_duration(duration):
             return amount * 3600
         elif unit == "d":
             return amount * 86400
-    except discord.Forbidden:
+
+        return None
+    except (ValueError, IndexError):
         return None
 
 # UNMUTE ----------------------------------------------------------------------------------------------------------
@@ -566,7 +597,6 @@ async def trivia(ctx):
     return None
 
 # FLAG TRIVIA ------------------------------------------------------------------------------------------------------
-intents = discord.Intents.default()
 @bot.command()
 async def flag(ctx):
     try:
@@ -901,9 +931,9 @@ async def connect4(ctx, opponent: discord.User = None):
         await view.bot_turn()
 
 # MUSIC -----------------------------------------------------------------------------------------------------------
-youtube_dl.utils.bug_reports_message = lambda *args, **kwargs: ""
+ytdlp_utils.bug_reports_message = lambda *args, **kwargs: ""
 
-ytdl_format_options = {
+ytdl_format_options: dict[str, Any] = {
     "format": "bestaudio/best",
     "noplaylist": True,
     "quiet": True,
@@ -925,10 +955,11 @@ ffmpeg_options = {
     "options": "-vn"
 }
 
-ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
+ytdl = youtube_dl.YoutubeDL(cast(Any, ytdl_format_options))
 song_queue = []
 loop_song = False
 current_song = None
+skip_once = False
 now_playing_message = None
 slowed_mode = False
 sped_mode = False
@@ -939,15 +970,19 @@ paused_total = 0.0
 async def get_song_info(query):
     loop = asyncio.get_running_loop()
 
-    def extract():
-        return ytdl.extract_info(query, download=False)
+    info = await loop.run_in_executor(
+        None,
+        lambda: ytdl.extract_info(query, download=False)
+    )
+    info = cast(dict[str, Any], info)
 
-    info = await loop.run_in_executor(None, extract)
+    entries = info.get("entries")
+    if isinstance(entries, list) and entries:
+        first = entries[0]
+        if isinstance(first, dict):
+            info = cast(dict[str, Any], first)
 
-    if "entries" in info and info["entries"]:
-        info = info["entries"][0]
-
-    webpage_url = info.get("webpage_url") or info.get("original_url") or query
+    webpage_url = info.get("webpage_url") or info.get("orginal_url") or query
 
     return {
         "query": query,
@@ -974,6 +1009,18 @@ def build_now_playing_embed(song):
     minutes, seconds = divmod(duration, 60)
     duration_text = f"{minutes}:{seconds:02d}"
 
+    if paused_at is None:
+        status_text = "Playing"
+    else:
+        status_text = "Paused"
+
+    if slowed_mode:
+        mode_text = "Slowed"
+    elif sped_mode:
+        mode_text = "Sped"
+    else:
+        mode_text = "Normal"
+
     embed = discord.Embed(
         title="🎶 Now Playing",
         description=f"**[{title}]({webpage_url})**" if webpage_url else f"**{title}**",
@@ -981,17 +1028,19 @@ def build_now_playing_embed(song):
         url=webpage_url if webpage_url else None
     )
 
-    embed.add_field(name="⏱ Duration", value=duration_text, inline=True)
+    embed.add_field(name="⏱️ Duration", value=duration_text, inline=True)
     embed.add_field(name="📺 Uploader", value=uploader, inline=True)
+    embed.add_field(name="▶️ Status", value=status_text, inline=True)
+
     embed.add_field(name="🔁 Loop", value="ON" if loop_song else "OFF", inline=True)
+    embed.add_field(name="⚙️ Mode", value=mode_text, inline=True)
+    embed.add_field(name="📂 Queue", value=str(len(song_queue)), inline=True)
 
     if views is not None:
         embed.add_field(name="👀 Views", value=f"{views:,}", inline=True)
 
     if likes is not None:
         embed.add_field(name="👍 Likes", value=f"{likes:,}", inline=True)
-
-    embed.add_field(name="📂 Queue", value=str(len(song_queue)), inline=True)
 
     if thumbnail:
         embed.set_image(url=thumbnail)
@@ -1001,16 +1050,139 @@ def build_now_playing_embed(song):
 
 
 async def update_now_playing_embed():
-    global now_playing_message, current_song
+    message = now_playing_message
+    song = current_song
 
-    if not now_playing_message or not current_song:
+    if message is None or song is None:
         return
 
     try:
-        embed = build_now_playing_embed(current_song)
-        await now_playing_message.edit(embed=embed)
+        embed = build_now_playing_embed(song)
+        await message.edit(embed=embed)
     except Exception as e:
         print(f"Failed to update now playing embed: {e}")
+
+class MusicControls(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        vc = interaction.guild.voice_client if interaction.guild else None
+
+        if not vc or not vc.channel:
+            await interaction.response.send_message(
+                "⚠️ I'm not in a voice channel.",
+                ephemeral=True
+            )
+            return False
+
+        if not interaction.user.voice or interaction.user.voice.channel != vc.channel:
+            await interaction.response.send_message(
+                "⚠️ You must be in my voice channel to use these controls.",
+                ephemeral=True
+            )
+            return False
+
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+    @discord.ui.button(label="Pause/Resume", emoji="▶️", style=discord.ButtonStyle.primary)
+    async def pause_resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        global paused_at, paused_total
+
+        vc = interaction.guild.voice_client
+        if not vc:
+            await interaction.response.send_message("⚠️ Nothing is playing.", ephemeral=True)
+            return
+
+        if vc.is_paused():
+            vc.resume()
+            if paused_at is not None:
+                paused_total += time.monotonic() - paused_at
+                paused_at = None
+
+        elif vc.is_playing():
+            vc.pause()
+            paused_at = time.monotonic()
+
+        else:
+            await interaction.response.send_message("⚠️ Nothing is playing.", ephemeral=True)
+            return
+
+        await interaction.response.edit_message(
+            embed=build_now_playing_embed(current_song),
+            view=self
+        )
+
+    @discord.ui.button(label="Skip", emoji="⏭️", style=discord.ButtonStyle.secondary)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        global skip_once
+
+        vc = interaction.guild.voice_client
+        if not vc or not (vc.is_playing() or vc.is_paused()):
+            await interaction.response.send_message("⚠️ Nothing is playing.", ephemeral=True)
+            return
+
+        skip_once = True
+        await interaction.response.defer()
+        vc.stop()
+
+    @discord.ui.button(label="Loop", emoji="🔁", style=discord.ButtonStyle.success)
+    async def loop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        global loop_song
+        loop_song = not loop_song
+
+        await interaction.response.edit_message(
+            embed=build_now_playing_embed(current_song),
+            view=self
+        )
+
+    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger)
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        global song_queue, current_song, now_playing_message
+        global loop_song, play_started_at, paused_at, paused_total, skip_once
+
+        vc = interaction.guild.voice_client
+        if not vc:
+            await interaction.response.send_message("⚠️ Nothing is playing.", ephemeral=True)
+            return
+
+        song_queue.clear()
+        current_song = None
+        loop_song = False
+        skip_once = False
+        play_started_at = None
+        paused_at = None
+        paused_total = 0.0
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.response.edit_message(
+            content="⏹ Playback stopped.",
+            embed=None,
+            view=self
+        )
+
+        now_playing_message = None
+        vc.stop()
+
+        try:
+            await vc.disconnect()
+        except  Exception:
+            pass
+
+        self.stop()
 
 def make_audio_source(audio_url, start_at=0.0, slowed=False, sped=False):
     before = ffmpeg_options["before_options"]
@@ -1053,13 +1225,15 @@ def get_current_playback_position():
 
 async def play_next(ctx):
     global loop_song, current_song, now_playing_message
+    global play_started_at, paused_at, paused_total, skip_once
 
     if not ctx.voice_client or not ctx.voice_client.is_connected():
         return
 
-    if loop_song and current_song:
+    if loop_song and current_song and not skip_once:
         queued_song = current_song
     else:
+        skip_once = False
         if not song_queue:
             current_song = None
             now_playing_message = None
@@ -1115,7 +1289,6 @@ async def play_next(ctx):
 
     ctx.voice_client.play(source, after=after_playback)
 
-    global play_started_at, paused_at, paused_total
     play_started_at = time.monotonic()
     paused_at = None
     paused_total = 0.0
@@ -1128,7 +1301,9 @@ async def play_next(ctx):
         except Exception:
             pass
 
-    now_playing_message = await ctx.send(embed=embed)
+    view = MusicControls()
+    now_playing_message = await ctx.send(embed=embed, view=view)
+    view.message = now_playing_message
 
 @bot.command()
 async def join(ctx):
@@ -1190,7 +1365,8 @@ async def pause(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.pause()
         paused_at = time.monotonic()
-        await ctx.send("⏸ Paused the song")
+        await ctx.send("⏸️ Paused the song")
+        await update_now_playing_embed()
     else:
         await ctx.send("⚠️ No song is playing!")
 
@@ -1203,14 +1379,18 @@ async def resume(ctx):
             paused_total += time.monotonic() - paused_at
             paused_at = None
         await ctx.send("▶️ Resumed the song")
+        await update_now_playing_embed()
     else:
         await ctx.send("⚠️ No song is paused!")
 
 @bot.command()
 async def skip(ctx):
+    global skip_once
+
     if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+        skip_once = True
         ctx.voice_client.stop()
-        await ctx.send("⏭ Skipped the song")
+        await ctx.send("⏭️ Skipped the song")
     else:
         await ctx.send("⚠️ Nothing is playing!")
 
@@ -1251,9 +1431,16 @@ async def queue(ctx):
 @bot.command()
 async def leave(ctx):
     global current_song, now_playing_message
+    global play_started_at, paused_at, paused_total, skip_once
+
     song_queue.clear()
     current_song = None
     now_playing_message = None
+    skip_once = False
+    play_started_at = None
+    paused_at = None
+    paused_total = 0.0
+
     await safe_disconnect(ctx)
 
 @bot.command()
@@ -1290,7 +1477,7 @@ async def volume(ctx, volume: int):
         await ctx.send("⚠️ No song is playing!")
 
 @bot.command()
-async def slowed(ctx, mode: str = None):
+async def slowed(ctx, mode: str | None = None):
     global slowed_mode,sped_mode, play_started_at, paused_at, paused_total, current_song
 
     if mode is None:
@@ -1309,7 +1496,11 @@ async def slowed(ctx, mode: str = None):
 
     await ctx.send(f"🐢 Slowed mode is now **{'ON' if slowed_mode else 'OFF'}**")
 
-    if not (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+    vc = cast(discord.VoiceClient | None, ctx.voice_client)
+    if vc is None or current_song is None:
+        return
+
+    if not (vc.is_playing() or vc.is_paused()):
         return
 
     try:
