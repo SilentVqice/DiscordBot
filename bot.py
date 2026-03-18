@@ -6,11 +6,10 @@ import asyncio
 import aiohttp
 import random
 import html
-
-import result
+import yt_dlp as youtube_dl
 from discord.ext.commands import Bot
 from dotenv import load_dotenv
-from discord import AllowedMentions, player
+from discord import AllowedMentions
 from discord.ext import commands
 
 load_dotenv()
@@ -163,7 +162,8 @@ async def on_message(message):
         return
     special_user_responses = {
         979934316429738035: "Mwah",
-        812269541731074078: "#sniped by snow (Farzo is your nightmare)"
+        812269541731074078: "#sniped by snow (Farzo is your nightmare)",
+        465610916873109504: "👑"
     }
 
     if bot.user in message.mentions:
@@ -793,5 +793,148 @@ async def connect4(ctx, opponent: discord.User = None):
 
     if view.is_bot_game and view.current == 2:
         await view.bot_turn()
+
+# MUSIC -----------------------------------------------------------------------------------------------------------
+youtube_dl.utils.bug_reports_message = lambda: ""
+
+ytdl_format_options = {
+    "format": "bestaudio/best",
+    "noplaylist": True,
+    "quiet": True,
+    "default_search": "auto",
+}
+ffmpeg_options = {"options": "-vn"}
+
+ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
+song_queue = []
+loop_song = False
+
+async def play_next(ctx):
+    global loop_song
+    if song_queue:
+        if not loop_song:
+            url = song_queue.pop(0)
+        else:
+            url = song_queue[0]
+
+        info = ytdl.extract_info(url, download=False)
+        audio_url = info["url"]
+        title = info.get("title", "Unknown")
+        duration = info.get("duration", 0)
+        thumbnail = info.get("thumbnail")
+        source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options)
+
+        ctx.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop))
+
+        embed = discord.Embed(
+            title="🎶 Now Playing",
+            description=f"{title}",
+            colour=discord.Colour.red()
+            )
+        embed.add_field(
+            name="Duration",
+            value=f"{duration} seconds",
+            inline=True
+            )
+        if thumbnail:
+            embed.set_thumbnail(url=thumbnail)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.voice_client.disconnect()
+
+@bot.command()
+async def join(ctx):
+    if ctx.author.voice:
+        await ctx.author.voice.channel.connect()
+        await ctx.send("🔊 Joined your voice channel!")
+    else:
+        await ctx.send("⚠️ You must be in a voice channel!")
+
+@bot.command()
+async def play(ctx, *, query):
+    if not ctx.voice_client:
+        await join(ctx)
+    song_queue.append(query)
+    if not ctx.voice_client.is_playing():
+        await play_next(ctx)
+    else:
+        await ctx.send(f"➕ Added to queue: {query}")
+
+@bot.command()
+async def pause(ctx):
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.pause()
+        await ctx.send("⏸ Paused the song")
+    else:
+        await ctx.send("⚠️ No song is playing!")
+
+@bot.command()
+async def resume(ctx):
+    if ctx.voice_client and ctx.voice_client.is_paused():
+        ctx.voice_client.resume()
+        await ctx.send("▶️ Resumed the song")
+    else:
+        await ctx.send("⚠️ No song is paused!")
+
+@bot.command()
+async def skip(ctx):
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+        await ctx.send("⏭ Skipped the song")
+    else:
+        await ctx.send("⚠️ Nothing is playing!")
+
+@bot.command()
+async def queue(ctx):
+    if song_queue:
+        embed = discord.Embed(
+            title="🎶 Queue",
+            colour=discord.Color.green()
+        )
+        for i, song in enumerate(song_queue, start=1):
+            embed.add_field(
+                name=f"{i}.",
+                value=song,
+                inline=False
+            )
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("📭 Queue is empty!")
+
+@bot.command()
+async def leave(ctx):
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        await ctx.send("👋 Left the voice channel")
+    else:
+        await ctx.send("⚠️ Not in a voice channel!")
+
+@bot.command()
+async def loop(ctx, mode: str = "off"):
+    global loop_song
+    if mode.lower() == "on":
+        loop_song = True
+        await ctx.send("🔁 Looping current song enabled")
+    else:
+        loop_song = False
+        await ctx.send("🔁 Looping disabled")
+
+@bot.command()
+async def shuffle(ctx):
+    random.shuffle(song_queue)
+    await ctx.send("🔀 Queue shuffled")
+
+@bot.command()
+async def volume(ctx, volume: int):
+    if ctx.voice_client and ctx.voice_client.source:
+        # Wrap current source in PCMVolumeTransformer if not already
+        if not isinstance(ctx.voice_client.source, discord.PCMVolumeTransformer):
+            ctx.voice_client.source = discord.PCMVolumeTransformer(ctx.voice_client.source)
+        ctx.voice_client.source.volume = volume / 100
+        await ctx.send(f"🔊 Volume set to {volume}%")
+    else:
+        await ctx.send("⚠️ No song is playing!")
+
+
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
