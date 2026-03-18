@@ -844,7 +844,8 @@ async def play_next(ctx):
             embed.set_thumbnail(url=thumbnail)
         await ctx.send(embed=embed)
     else:
-        await ctx.voice_client.disconnect()
+        if ctx.voice_client:
+            await ctx.voice_client.disconnect()
 
 @bot.command()
 async def join(ctx):
@@ -863,6 +864,8 @@ async def join(ctx):
 async def play(ctx, *, query):
     if not ctx.voice_client:
         await join(ctx)
+    if not ctx.voice_client:
+        return
     song_queue.append(query)
     if not ctx.voice_client.is_playing():
         await play_next(ctx)
