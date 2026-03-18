@@ -1,3 +1,4 @@
+import io
 import discord
 import logging
 import os
@@ -9,6 +10,8 @@ import html
 import sys
 import time
 import yt_dlp as youtube_dl
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from discord.ext.commands import Bot
 from dotenv import load_dotenv
 from discord import AllowedMentions
@@ -206,21 +209,105 @@ async def on_command_error(ctx, error):
     await ctx.send(f"Command error: {error}")
 
 # WELCOME MESSAGE --------------------------------------------------------------------------------------------------
+base_dir = Path(__file__).resolve().parent
+assets_dir = base_dir / "assets"
+
+background_path = assets_dir / "welcome_background.png"
+font_path = assets_dir / "DejaVuSans-Bold.ttf"
+
+card_width = 1000
+card_height = 350
+avatar_size = 180
+
+def load_font(size: int):
+    if font_path.exists():
+        return ImageFont.truetype(str(font_path), size)
+    return ImageFont.load_default()
+
+async def fetch_avatar_bytes(member: discord.Member) -> bytes:
+    avatar_asset = member.display_avatar.replace(size=256)
+    return await avatar_asset.read()
+
+def create_circular_avatar(avatar_bytes: bytes, size: int) -> Image.Image:
+    avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
+    avatar = ImageOps.fit(avatar, (size, size), method=Image.Resampling.LANCZOS)
+
+    mask = Image.new("L", avatar.size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0, 0, size, size), fill=255)
+
+    circular_avatar = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    circular_avatar.paste(avatar, (0,0), mask)
+    return circular_avatar
+
+def fit_background() -> Image.Image:
+    background = Image.open(background_path).convert("RGBA")
+    return ImageOps.fit(
+        background,
+        (card_width, card_height),
+        method=Image.Resampling.LANCZOS
+    )
+
+def add_overlay(base: Image.Image) -> None:
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    draw.rounded_rectangle(
+        (30, 30, card_width - 30, card_height - 30),
+        radius = 30,
+        fill=(0, 0, 0, 120),
+    )
+    base.alpha_composite(overlay)
+
+def build_welcome_card(avatar_bytes: bytes, member: discord.Member) -> io.BytesIO:
+    card = fit_background()
+
+    output = io.BytesIO()
+    card.save(output, format="PNG")
+    output.seek(0)
+    return output
+
 @bot.event
 async def on_member_join(member):
-    welcome_channel_id = 1483276233818112202
-    channel = member.guild.get_channel(welcome_channel_id)
+    channel = member.guild.get_channel(1483276233818112202)
+    if channel is None:
+        return
 
-    if channel:
+    print(f"Current working directory: {Path.cwd()}")
+    print(f"Resolved background path: {background_path}")
+    print(f"Background exists: {background_path.exists()}")
+
+    if not background_path.exists():
         embed = discord.Embed(
             title=f"Welcome to the server, {member.display_name}!",
-            description="We're very happy to have you buh buh buh",
-            colour=discord.Color.green()
-         )
-        embed.set_thumbnail(url=member.avatar.url if member.avatar else None)
-        embed.set_footer(text="Enjoy your stay!")
+            description="We're very happy to have you here buh buh",
+            colour=discord.Color.green(),
+        )
+        embed.set_footer(text="Missing welcome background image.")
+        await channel.send(
+            content=f"Welcome {member.mention}!",
+            embed=embed
+        )
+        return
 
-        await channel.send(content=f"Welcome {member.mention}!", embed=embed)
+    avatar_bytes = await fetch_avatar_bytes(member)
+    welcome_image = build_welcome_card(avatar_bytes, member)
+
+    file = discord.File(fp=welcome_image, filename="welcome.png")
+
+    embed = discord.Embed(
+        title=f"Welcome to the server, {member.display_name}!",
+        description="buh buh buh",
+        colour=discord.Color.green(),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_image(url="attachment://welcome.png")
+    embed.set_footer(text="Enjoy your stay!")
+
+    await channel.send(
+        content=f"Welcome {member.mention}!",
+        embed=embed,
+        file=file,
+    )
 
 # AUTO-ROLE --------------------------------------------------------------------------------------------------------
     default_role_id = 1483280765092630669
@@ -822,7 +909,9 @@ ytdl_format_options = {
     "quiet": True,
     "default_search": "auto",
     "js_runtimes": {
-        "node": {}
+        "node": {
+            "path": r"C:\Program Files\nodejs\node.exe"
+        }
     },
 }
 ffmpeg_options = {
@@ -932,7 +1021,7 @@ def make_audio_source(audio_url, start_at=0.0, slowed=False, sped=False):
         options = (
             '-vn -filter:a '
             '"atempo=0.90,asetrate=44100*0.90,aresample=44100,'
-            'aecho=0.8:0.88:60:0.18"'
+            'aecho=0.8:0.88:40:0.08"'
         )
     elif sped:
         options = (
@@ -1004,13 +1093,6 @@ async def play_next(ctx):
         "likes": fresh_song.get("likes", queued_song.get("likes")),
         "requester": queued_song.get("requester"),
     }
-
-    if slowed_mode:
-        options = "-vn -filter:a \"atempo=0.90,asetrate=44100*0.90,aresample=44100,aecho=0.8:0.88:60:0.18\""
-    elif sped_mode:
-        options = "-vn -filter:a \"atempo=1.12,asetrate=44100*1.12,aresample=44100,aecho=0.8:0.88:6:0.08\""
-    else:
-        options = "-vn"
 
     source = make_audio_source(
         audio_url,
@@ -1118,7 +1200,7 @@ async def resume(ctx):
     if ctx.voice_client and ctx.voice_client.is_paused():
         ctx.voice_client.resume()
         if paused_at is not None:
-            paused_total += time.monotic() - paused_at
+            paused_total += time.monotonic() - paused_at
             paused_at = None
         await ctx.send("▶️ Resumed the song")
     else:
@@ -1223,7 +1305,7 @@ async def slowed(ctx, mode: str = None):
             return await ctx.send("⚠️ Use `;slowed`, `;slowed on`, or `;slowed off`")
 
     if slowed_mode:
-        nightcore_mode = False
+        sped_mode = False
 
     await ctx.send(f"🐢 Slowed mode is now **{'ON' if slowed_mode else 'OFF'}**")
 
@@ -1245,7 +1327,7 @@ async def slowed(ctx, mode: str = None):
     if was_paused:
         ctx.voice_client.resume()
         if paused_at is not None:
-            paused_total += time.monotic() - paused_at
+            paused_total += time.monotonic() - paused_at
             paused_at = None
 
     new_source = make_audio_source(audio_url, start_at=position, slowed=slowed_mode)
