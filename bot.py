@@ -6,9 +6,11 @@ import asyncio
 import aiohttp
 import random
 import html
+
+import result
 from discord.ext.commands import Bot
 from dotenv import load_dotenv
-from discord import AllowedMentions
+from discord import AllowedMentions, player
 from discord.ext import commands
 
 load_dotenv()
@@ -495,16 +497,17 @@ async def flag(ctx):
             return m.author == ctx.author and m.channel == ctx.channel
 
         total_time = 25
+        hint_task = None
         hint_sent = False
 
         async def scheduled_hint():
             nonlocal hint_sent
             await asyncio.sleep(10)
             if not hint_sent:
-                await ctx.send(f"💡 Hint: Starts with **{correct[0]}**")
                 hint_sent = True
+                await ctx.send(f"💡 Hint: Starts with **{correct[0]}**")
 
-        asyncio.create_task(scheduled_hint())
+        hint_task = asyncio.create_task(scheduled_hint())
 
         start_time = asyncio.get_event_loop().time()
 
@@ -512,14 +515,20 @@ async def flag(ctx):
             elapsed = asyncio.get_event_loop().time() - start_time
             remaining = total_time - elapsed
             if remaining <= 0:
+                if not hint_task.done():
+                    hint_task.cancel()
                 return await ctx.send(f"⏰ Time's up! The answer was **{correct}**.")
 
             try:
                 msg = await bot.wait_for("message", timeout=remaining, check=check)
             except asyncio.TimeoutError:
+                if not hint_task.done():
+                    hint_task.cancel()
                 return await ctx.send(f"⏰ Time's up! The answer was **{correct}**.")
 
             if correct.lower() in msg.content.lower():
+                if not hint_task.done():
+                    hint_task.cancel()
                 return await ctx.send("✅ Correct!")
 
             await ctx.send(f"❌ Wrong! Try again...")
@@ -532,41 +541,101 @@ async def flag(ctx):
         await ctx.send(f"Error: {e}")
 
 # RPS --------------------------------------------------------------------------------------------------------------
-@bot.command()
-async def rps(ctx):
-    choices = ["rock", "paper", "scissors"]
+emojis = {
+    "rock": "🪨",
+    "paper": "📄",
+    "scissors": "✂️"
+}
 
-    await ctx.send("🪨 📄 ✂️ Type **Rock**, **Paper**, or **Scissors**!")
+class RPSButton(discord.ui.Button):
+    def __init__(self, label, view_ref):
+        super().__init__(label=f"{emojis[label.lower()]} {label}", style=discord.ButtonStyle.primary)
+        self.choice_lower = label.lower()
+        self.choice_label = label
+        self.view_ref = view_ref
 
-    def check(m):
-        return (
-            m.author == ctx.author
-            and m.channel == ctx.channel
-            and m.content.lower() in choices
+    async def callback(self, interaction: discord.Interaction):
+        if self.view_ref.pve:
+            if interaction.user != self.view_ref.player1:
+                return await interaction.response.send_message("This button isn’t for you!", ephemeral=True)
+            player = self.view_ref.player1
+        else:
+            if interaction.user not in [self.view_ref.player1, self.view_ref.opponent]:
+                return await interaction.response.send_message("This button isn’t for you!", ephemeral=True)
+            player = interaction.user
+
+        if player in self.view_ref.choices:
+            return await interaction.response.send_message("You already chose!", ephemeral=True)
+
+        self.view_ref.choices[player] = (self.choice_lower, self.choice_label)
+        await interaction.response.send_message(
+            f"You chose {emojis[self.choice_lower]} **{self.choice_label}**!",
+            ephemeral=True
         )
 
-    try:
-        msg = await bot.wait_for("message", timeout=15, check=check)
-    except asyncio.TimeoutError:
-        return await ctx.send("⏰ You took too long!")
+        if self.view_ref.pve:
+            bot_choice = random.choice(["rock", "paper", "scissors"])
+            self.view_ref.choices[self.view_ref.opponent] = (bot_choice, bot_choice.capitalize())
+            await self.view_ref.resolve(interaction)
+        elif len(self.view_ref.choices) == 2:
+            await self.view_ref.resolve(interaction)
 
-    user_choice = msg.content.lower()
-    bot_choice = random.choice(choices)
+class RPSView(discord.ui.View):
+    def __init__(self, player1, opponent=None):
+        super().__init__(timeout=60)
+        self.player1 = player1
+        self.opponent = opponent or bot.user
+        self.choices = {}
+        self.pve = opponent is None or opponent.bot
 
-    await ctx.send(f"🤖 I chose **{bot_choice}**!")
+        for label in ["Rock", "Paper", "Scissors"]:
+            self.add_item(RPSButton(label, self))
 
-    if user_choice == bot_choice:
-        await ctx.send("🤝 It's a tie!")
-    elif(
-        (user_choice == "rock" and bot_choice == "scissors") or
-        (user_choice == "paper" and bot_choice == "rock") or
-        (user_choice == "scissors" and bot_choice == "paper")
-    ):
-        await ctx.send("✅ You win!")
-    else:
-        await ctx.send("❌ You lose!")
+    async def resolve(self, interaction):
+        p1, p2 = self.player1, self.opponent
+        (c1_lower, c1_label) = self.choices[p1]
+        (c2_lower, c2_label) = self.choices[p2]
+
+        c1_emoji = emojis[c1_lower]
+        c2_emoji = emojis[c2_lower]
+
+        if c1_lower == c2_lower:
+            result = "🤝 It's a tie!"
+        elif (c1_lower == "rock" and c2_lower == "scissors") or \
+             (c1_lower == "paper" and c2_lower == "rock") or \
+             (c1_lower == "scissors" and c2_lower == "paper"):
+            result = f"✅ {p1.mention} wins!"
+        else:
+            result = f"❌ {p2.mention} wins!"
+
+        for item in self.children:
+            item.disabled = True
+
+        embed = discord.Embed(
+            title="Rock, Paper, Scissors",
+            description=f"{p1.mention} chose {c1_emoji} **{c1_label}**\n"
+                        f"{p2.mention} chose {c2_emoji} **{c2_label}**\n"
+                        f"{result}",
+            colour=discord.Colour.blurple()
+        )
+
+        await interaction.message.edit(embed=embed, view=self)
+        self.stop()
+
+@bot.command()
+async def rps(ctx, opponent: discord.Member = None):
+    if opponent == ctx.author:
+        return await ctx.send("You can't play against yourself!")
+
+    view = RPSView(ctx.author, opponent)
+
+    embed=discord.Embed(
+        title="Rock, Paper, Scissors",
+        description=f"{ctx.author.mention} vs {'🤖 Bot' if view.pve else opponent.mention}\nChoose your move below!",
+        color=discord.Color.blurple()
+    )
+    await ctx.send(embed=embed, view=view)
     return None
-
 # CONNECT 4 --------------------------------------------------------------------------------------------------------
 class Connect4Button(discord.ui.Button):
     def __init__(self, column: int, row: int):
