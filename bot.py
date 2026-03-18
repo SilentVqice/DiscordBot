@@ -184,6 +184,10 @@ async def on_command_error(ctx, error):
         return await ctx.send("I couldn't read that user. Try `;connect4` or `;connect4 @user`.")
     if isinstance(error, commands.MissingRequiredArgument):
         return await ctx.send("Missing argument for that command.")
+    if isinstance(error, commands.CommandInvokeError) and isinstance(error.original, RuntimeError):
+        message = str(error.original).lower()
+        if "library needed" in message and "voice" in message:
+            return await ctx.send("Voice support is missing. Install `PyNaCl` and restart the bot.")
     await ctx.send(f"Command error: {error}")
 
 # WELCOME MESSAGE --------------------------------------------------------------------------------------------------
@@ -845,8 +849,13 @@ async def play_next(ctx):
 @bot.command()
 async def join(ctx):
     if ctx.author.voice:
-        await ctx.author.voice.channel.connect()
-        await ctx.send("🔊 Joined your voice channel!")
+        try:
+            await ctx.author.voice.channel.connect()
+            await ctx.send("🔊 Joined your voice channel!")
+        except RuntimeError as e:
+            if "library needed" in str(e).lower() and "voice" in str(e).lower():
+                return await ctx.send("Voice support is missing. Install `PyNaCl` and restart the bot.")
+            raise
     else:
         await ctx.send("⚠️ You must be in a voice channel!")
 
