@@ -842,6 +842,7 @@ loop_song = False
 current_song = None
 now_playing_message = None
 slowed_mode = False
+sped_mode = False
 play_started_at = None
 paused_at = None
 paused_total = 0.0
@@ -1006,6 +1007,8 @@ async def play_next(ctx):
 
     if slowed_mode:
         options = "-vn -filter:a \"atempo=0.90,asetrate=44100*0.90,aresample=44100,aecho=0.8:0.88:60:0.18\""
+    elif sped_mode:
+        options = "-vn -filter:a \"atempo=1.12,asetrate=44100*1.12,aresample=44100,aecho=0.8:0.88:6:0.08\""
     else:
         options = "-vn"
 
@@ -1206,7 +1209,7 @@ async def volume(ctx, volume: int):
 
 @bot.command()
 async def slowed(ctx, mode: str = None):
-    global slowed_mode, play_started_at, paused_at, paused_total, current_song
+    global slowed_mode,sped_mode, play_started_at, paused_at, paused_total, current_song
 
     if mode is None:
         slowed_mode = not slowed_mode
@@ -1218,6 +1221,9 @@ async def slowed(ctx, mode: str = None):
             slowed_mode = False
         else:
             return await ctx.send("⚠️ Use `;slowed`, `;slowed on`, or `;slowed off`")
+
+    if slowed_mode:
+        nightcore_mode = False
 
     await ctx.send(f"🐢 Slowed mode is now **{'ON' if slowed_mode else 'OFF'}**")
 
