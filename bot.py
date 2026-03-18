@@ -6,6 +6,7 @@ import asyncio
 import aiohttp
 import random
 import html
+import sys
 import yt_dlp as youtube_dl
 from discord.ext.commands import Bot
 from dotenv import load_dotenv
@@ -23,6 +24,19 @@ intents.reactions = True
 intents.presences = True
 
 bot = Bot(command_prefix=';', intents=intents, help_command=None)
+
+def voice_runtime_info():
+    try:
+        import nacl
+        nacl_status = f"ok ({nacl.__version__})"
+    except Exception as e:
+        nacl_status = f"missing ({e.__class__.__name__})"
+    try:
+        import davey
+        dave_status = f"ok ({getattr(davey, '__version__', 'installed')})"
+    except Exception as e:
+        dave_status = f"missing ({e.__class__.__name__})"
+    return f"Runtime: `{sys.executable}` | nacl: {nacl_status} | davey: {dave_status}"
 
 # BOT START ---------------------------------------------------------------------------------------------------------
 @bot.event
@@ -187,7 +201,7 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandInvokeError) and isinstance(error.original, RuntimeError):
         message = str(error.original).lower()
         if "library needed" in message and "voice" in message:
-            return await ctx.send("Voice support is missing. Install `PyNaCl` and restart the bot.")
+            return await ctx.send(f"Voice support is missing. Install `PyNaCl` and `davey`, then restart the bot.\n{voice_runtime_info()}")
     await ctx.send(f"Command error: {error}")
 
 # WELCOME MESSAGE --------------------------------------------------------------------------------------------------
@@ -799,13 +813,18 @@ async def connect4(ctx, opponent: discord.User = None):
         await view.bot_turn()
 
 # MUSIC -----------------------------------------------------------------------------------------------------------
-youtube_dl.utils.bug_reports_message = lambda: ""
+youtube_dl.utils.bug_reports_message = lambda *args, **kwargs: ""
 
 ytdl_format_options = {
     "format": "bestaudio/best",
     "noplaylist": True,
     "quiet": True,
     "default_search": "auto",
+    "extractor_args": {
+        "youtube": {
+            "player_skip": ["js"],
+        }
+    },
 }
 ffmpeg_options = {"options": "-vn"}
 
@@ -821,8 +840,35 @@ async def play_next(ctx):
         else:
             url = song_queue[0]
 
-        info = ytdl.extract_info(url, download=False)
-        audio_url = info["url"]
+        try:
+            info = ytdl.extract_info(url, download=False)
+        except ImportError as e:
+            await ctx.send(f"Music backend import error: {e}. Reinstall `yt-dlp` and restart the bot.")
+            return
+        except Exception as e:
+            await ctx.send(f"Couldn't load this track: {e}")
+            if song_queue:
+                await play_next(ctx)
+            return
+
+        if not ctx.voice_client:
+            return
+
+        if "entries" in info and info["entries"]:
+            info = info["entries"][0]
+
+        audio_url = info.get("url")
+        if not audio_url:
+            webpage = info.get("webpage_url") or info.get("original_url") or url
+            await ctx.send(
+                "Couldn't get a playable audio stream for this track. "
+                "Try another link/query, or install a supported JS runtime for yt-dlp.\n"
+                f"Track: {webpage}"
+            )
+            if song_queue:
+                await play_next(ctx)
+            return
+
         title = info.get("title", "Unknown")
         duration = info.get("duration", 0)
         thumbnail = info.get("thumbnail")
@@ -850,13 +896,13 @@ async def play_next(ctx):
 @bot.command()
 async def join(ctx):
     if ctx.author.voice:
+        if not getattr(discord.voice_client, "has_nacl", False):
+            return await ctx.send(f"Voice support is missing. Install `PyNaCl` and `davey`, then restart the bot.\n{voice_runtime_info()}")
         try:
             await ctx.author.voice.channel.connect()
             await ctx.send("🔊 Joined your voice channel!")
         except RuntimeError as e:
-            if "library needed" in str(e).lower() and "voice" in str(e).lower():
-                return await ctx.send("Voice support is missing. Install `PyNaCl` and restart the bot.")
-            raise
+            return await ctx.send(f"Voice connect failed: {e}\n{voice_runtime_info()}")
     else:
         await ctx.send("⚠️ You must be in a voice channel!")
 
