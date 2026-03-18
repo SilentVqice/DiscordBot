@@ -993,7 +993,6 @@ async def shuffle(ctx):
 @bot.command()
 async def volume(ctx, volume: int):
     if ctx.voice_client and ctx.voice_client.source:
-        # Wrap current source in PCMVolumeTransformer if not already
         if not isinstance(ctx.voice_client.source, discord.PCMVolumeTransformer):
             ctx.voice_client.source = discord.PCMVolumeTransformer(ctx.voice_client.source)
         ctx.voice_client.source.volume = volume / 100
