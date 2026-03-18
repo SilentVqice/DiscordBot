@@ -7,6 +7,7 @@ import aiohttp
 import random
 import html
 import sys
+import time
 import yt_dlp as youtube_dl
 from discord.ext.commands import Bot
 from dotenv import load_dotenv
@@ -823,14 +824,15 @@ ytdl_format_options = {
     "js_runtimes": {
         "node": {}
     },
-    "extractor_args": {
-        "youtube": {
-            "player_skip": ["js"],
-        }
-    },
 }
 ffmpeg_options = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "before_options": (
+        "-reconnect 1 "
+        "-reconnect_streamed 1 "
+        "-reconnect_on_network_error 1 "
+        "-reconnect_on_http_error 4xx,5xx "
+        "-reconnect_delay_max 10"
+    ),
     "options": "-vn"
 }
 
@@ -839,6 +841,10 @@ song_queue = []
 loop_song = False
 current_song = None
 now_playing_message = None
+slowed_mode = False
+play_started_at = None
+paused_at = None
+paused_total = 0.0
 
 async def get_song_info(query):
     loop = asyncio.get_running_loop()
@@ -851,10 +857,13 @@ async def get_song_info(query):
     if "entries" in info and info["entries"]:
         info = info["entries"][0]
 
+    webpage_url = info.get("webpage_url") or info.get("original_url") or query
+
     return {
         "query": query,
+        "url": webpage_url,
         "title": info.get("title", "Unknown"),
-        "webpage_url": info.get("webpage_url") or info.get("original_url") or "",
+        "webpage_url": webpage_url,
         "audio_url": info.get("url"),
         "duration": info.get("duration") or 0,
         "thumbnail": info.get("thumbnail"),
@@ -913,6 +922,45 @@ async def update_now_playing_embed():
     except Exception as e:
         print(f"Failed to update now playing embed: {e}")
 
+def make_audio_source(audio_url, start_at=0.0, slowed=False, sped=False):
+    before = ffmpeg_options["before_options"]
+    if start_at and start_at > 0:
+        before = f"{before} -ss {start_at:.2f}"
+
+    if slowed:
+        options = (
+            '-vn -filter:a '
+            '"atempo=0.90,asetrate=44100*0.90,aresample=44100,'
+            'aecho=0.8:0.88:60:0.18"'
+        )
+    elif sped:
+        options = (
+            '-vn -filter:a '
+            '"atempo=1.12,asetrate=44100*1.12,aresample=44100,'
+            'aecho=0.8:0.88:6:0.08"'
+        )
+    else:
+        options = "-vn"
+
+    return discord.FFmpegPCMAudio(
+        audio_url,
+        before_options=before,
+        options=options
+    )
+
+def get_current_playback_position():
+    global play_started_at, paused_at, paused_total
+
+    if play_started_at is None:
+        return 0.0
+
+    if paused_at is not None:
+        elapsed = paused_at - play_started_at - paused_total
+    else:
+        elapsed = time.monotonic() - play_started_at - paused_total
+
+    return max(0.0, elapsed)
+
 async def play_next(ctx):
     global loop_song, current_song, now_playing_message
 
@@ -920,38 +968,81 @@ async def play_next(ctx):
         return
 
     if loop_song and current_song:
-        song = current_song
+        queued_song = current_song
     else:
         if not song_queue:
             current_song = None
             now_playing_message = None
             await safe_disconnect(ctx)
             return
-        song = song_queue.pop(0)
-        current_song = song
+        queued_song = song_queue.pop(0)
 
-    audio_url = song.get("audio_url")
+    try:
+        fresh_song = await get_song_info(queued_song["url"])
+    except Exception as e:
+        await ctx.send(f"⚠️ Couldn't load this track: {e}")
+        if song_queue:
+            await play_next(ctx)
+        return
+
+    audio_url = fresh_song.get("audio_url")
     if not audio_url:
         await ctx.send("⚠️ Couldn't get a playable stream for this track.")
         if song_queue:
             await play_next(ctx)
         return
 
-    source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options)
+    current_song = {
+        "url": fresh_song.get("url", queued_song.get("url")),
+        "title": fresh_song.get("title", queued_song.get("title", "Unknown")),
+        "webpage_url": fresh_song.get("webpage_url", queued_song.get("webpage_url", "")),
+        "thumbnail": fresh_song.get("thumbnail", queued_song.get("thumbnail")),
+        "duration": fresh_song.get("duration", queued_song.get("duration", 0)),
+        "uploader": fresh_song.get("uploader", queued_song.get("uploader", "Unknown")),
+        "views": fresh_song.get("views", queued_song.get("views")),
+        "likes": fresh_song.get("likes", queued_song.get("likes")),
+        "requester": queued_song.get("requester"),
+    }
+
+    if slowed_mode:
+        options = "-vn -filter:a \"atempo=0.90,asetrate=44100*0.90,aresample=44100,aecho=0.8:0.88:60:0.18\""
+    else:
+        options = "-vn"
+
+    source = make_audio_source(
+        audio_url,
+        start_at=0.0,
+        slowed=slowed_mode,
+        sped=sped_mode
+    )
+
 
     def after_playback(error):
         if error:
             print(f"Playback error: {error}")
+
         if ctx.voice_client and ctx.voice_client.is_connected():
             future = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
             try:
                 future.result()
             except Exception as e:
-                print(f"Error in play_next {e}")
+                print(f"Error in play_next: {e}")
 
     ctx.voice_client.play(source, after=after_playback)
 
-    embed = build_now_playing_embed(song)
+    global play_started_at, paused_at, paused_total
+    play_started_at = time.monotonic()
+    paused_at = None
+    paused_total = 0.0
+
+    embed = build_now_playing_embed(current_song)
+
+    if now_playing_message:
+        try:
+            await now_playing_message.delete()
+        except Exception:
+            pass
+
     now_playing_message = await ctx.send(embed=embed)
 
 @bot.command()
@@ -981,10 +1072,22 @@ async def play(ctx, *, query):
     except Exception as e:
         return await ctx.send(f"Couldn't load this track: {e}")
 
-    if not song.get("audio_url"):
-        return await ctx.send("⚠️ Couldn't get a playable stream for that track.")
+    if not song.get("webpage_url"):
+        return await ctx.send("⚠️ Couldn't resolve that track.")
 
-    song_queue.append(song)
+    queue_song = {
+        "url": song["webpage_url"],
+        "title": song.get("title", "Unknown"),
+        "webpage_url": song.get("webpage_url"),
+        "thumbnail": song.get("thumbnail"),
+        "duration": song.get("duration", 0),
+        "uploader": song.get("uploader", "Unknown"),
+        "views": song.get("views"),
+        "likes": song.get("likes"),
+        "requester": ctx.author,
+    }
+
+    song_queue.append(queue_song)
 
     if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
         if song.get("webpage_url"):
@@ -997,16 +1100,23 @@ async def play(ctx, *, query):
 
 @bot.command()
 async def pause(ctx):
+    global paused_at
+
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.pause()
+        paused_at = time.monotonic()
         await ctx.send("⏸ Paused the song")
     else:
         await ctx.send("⚠️ No song is playing!")
 
 @bot.command()
 async def resume(ctx):
+    global paused_at, paused_total
     if ctx.voice_client and ctx.voice_client.is_paused():
         ctx.voice_client.resume()
+        if paused_at is not None:
+            paused_total += time.monotic() - paused_at
+            paused_at = None
         await ctx.send("▶️ Resumed the song")
     else:
         await ctx.send("⚠️ No song is paused!")
@@ -1093,6 +1203,136 @@ async def volume(ctx, volume: int):
         await ctx.send(f"🔊 Volume set to {volume}%")
     else:
         await ctx.send("⚠️ No song is playing!")
+
+@bot.command()
+async def slowed(ctx, mode: str = None):
+    global slowed_mode, play_started_at, paused_at, paused_total, current_song
+
+    if mode is None:
+        slowed_mode = not slowed_mode
+    else:
+        mode = mode.lower()
+        if mode in ("on", "true", "yes", "1"):
+            slowed_mode = True
+        elif mode in ("off", "false", "no", "0"):
+            slowed_mode = False
+        else:
+            return await ctx.send("⚠️ Use `;slowed`, `;slowed on`, or `;slowed off`")
+
+    await ctx.send(f"🐢 Slowed mode is now **{'ON' if slowed_mode else 'OFF'}**")
+
+    if not (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+        return
+
+    try:
+        fresh_song = await get_song_info(current_song["url"])
+    except Exception as e:
+        return await ctx.send(f"⚠️ Couldn't reload the current track: {e}")
+
+    audio_url = fresh_song.get("audio_url")
+    if not audio_url:
+        return await ctx.send("⚠️ Couldn't rebuild the current stream.")
+
+    position = get_current_playback_position()
+
+    was_paused = ctx.voice_client.is_paused()
+    if was_paused:
+        ctx.voice_client.resume()
+        if paused_at is not None:
+            paused_total += time.monotic() - paused_at
+            paused_at = None
+
+    new_source = make_audio_source(audio_url, start_at=position, slowed=slowed_mode)
+
+    old_source = ctx.voice_client.source
+    ctx.voice_client.source = new_source
+
+    try:
+        if old_source:
+            old_source.cleanup()
+    except Exception:
+        pass
+
+    play_started_at = time.monotonic() - position
+    paused_at = None
+
+    if was_paused:
+        ctx.voice_client.pause()
+        paused_at = time.monotonic()
+
+    await update_now_playing_embed()
+    return None
+
+@bot.command()
+async def sped(ctx, mode: str = None):
+    global sped_mode, slowed_mode
+    global play_started_at, paused_at, paused_total, current_song
+
+    if mode is None:
+        sped_mode = not sped_mode
+    else:
+        mode = mode.lower().strip()
+        if mode in ("on", "true", "yes", "1"):
+            sped_mode = True
+        elif mode in ("off", "false", "no", "0"):
+            sped_mode = False
+        else:
+            return await ctx.send("⚠️ Use `;sped`, `;sped on`, or `;sped off`.")
+
+    if sped_mode:
+        slowed_mode = False
+
+    await ctx.send(f"⚡ Sped mode is now **{'ON' if sped_mode else 'OFF'}**")
+
+    if not ctx.voice_client or not current_song:
+        return
+
+    if not (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+        return
+
+    try:
+        fresh_song = await get_song_info(current_song["url"])
+    except Exception as e:
+        return await ctx.send(f"⚠️ Couldn't reload the current track: {e}")
+
+    audio_url = fresh_song.get("audio_url")
+    if not audio_url:
+        return await ctx.send("⚠️ Couldn't rebuild the current stream.")
+
+    position = get_current_playback_position()
+
+    was_paused = ctx.voice_client.is_paused()
+    if was_paused:
+        ctx.voice_client.resume()
+        if paused_at is not None:
+            paused_total += time.monotonic() - paused_at
+            paused_at = None
+
+    new_source = make_audio_source(
+        audio_url,
+        start_at=position,
+        slowed=False,
+        sped=sped_mode
+    )
+
+    old_source = ctx.voice_client.source
+    ctx.voice_client.source = new_source
+
+    try:
+        if old_source:
+            old_source.cleanup()
+    except Exception:
+        pass
+
+    play_started_at = time.monotonic() - position
+    paused_at = None
+
+    if was_paused:
+        ctx.voice_client.pause()
+        paused_at = time.monotonic()
+
+    await update_now_playing_embed()
+    return None
 
 async def safe_disconnect(ctx):
     global now_playing_message
