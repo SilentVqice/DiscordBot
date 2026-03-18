@@ -176,7 +176,7 @@ async def on_message(message):
         return
     special_user_responses = {
         979934316429738035: "Mwah",
-        812269541731074078: "#sniped by snow (Farzo is your nightmare)",
+        812269541731074078: "Cutest girl :3",
         465610916873109504: "👑"
     }
 
@@ -837,72 +837,103 @@ ffmpeg_options = {
 ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 song_queue = []
 loop_song = False
+current_song = None
+
+async def get_song_info(query):
+    loop = asyncio.get_running_loop()
+
+    def extract():
+        return ytdl.extract_info(query, download=False)
+
+    info = await loop.run_in_executor(None, extract)
+
+    if "entries" in info and info["entries"]:
+        info = info["entries"][0]
+
+    return {
+        "query": query,
+        "title": info.get("title", "Unknown"),
+        "webpage_url": info.get("webpage_url") or info.get("original_url") or "",
+        "audio_url": info.get("url"),
+        "duration": info.get("duration") or 0,
+        "thumbnail": info.get("thumbnail"),
+        "uploader": info.get("uploader") or info.get("channel") or "Unknown",
+        "views": info.get("view_count"),
+        "likes": info.get("like_count"),
+    }
 
 async def play_next(ctx):
-    global loop_song
-    if song_queue:
-        if not loop_song:
-            url = song_queue.pop(0)
-        else:
-            url = song_queue[0]
+    global loop_song, current_song
 
-        try:
-            info = ytdl.extract_info(url, download=False)
-        except ImportError as e:
-            await ctx.send(f"Music backend import error: {e}. Reinstall `yt-dlp` and restart the bot.")
-            return
-        except Exception as e:
-            await ctx.send(f"Couldn't load this track: {e}")
-            if song_queue:
-                await play_next(ctx)
-            return
+    if not ctx.voice_client or not ctx.voice_client.is_connected():
+        return
 
-        if not ctx.voice_client:
-            return
-
-        if "entries" in info and info["entries"]:
-            info = info["entries"][0]
-
-        audio_url = info.get("url")
-        if not audio_url:
-            webpage = info.get("webpage_url") or info.get("original_url") or url
-            await ctx.send(
-                "Couldn't get a playable audio stream for this track. "
-                "Try another link/query, or install a supported JS runtime for yt-dlp.\n"
-                f"Track: {webpage}"
-            )
-            if song_queue:
-                await play_next(ctx)
-            return
-
-        title = info.get("title", "Unknown")
-        duration = info.get("duration", 0)
-        thumbnail = info.get("thumbnail")
-        source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options)
-
-        def after_playback(error):
-            if error:
-                print(f"Playback error: {error}")
-            asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
-
-        ctx.voice_client.play(source, after=after_playback)
-
-        embed = discord.Embed(
-            title="🎶 Now Playing",
-            description=f"{title}",
-            colour=discord.Colour.red()
-            )
-        embed.add_field(
-            name="Duration",
-            value=f"{duration} seconds",
-            inline=True
-            )
-        if thumbnail:
-            embed.set_thumbnail(url=thumbnail)
-        await ctx.send(embed=embed)
+    if loop_song and current_song:
+        song = current_song
     else:
-        if ctx.voice_client:
-            await ctx.voice_client.disconnect()
+        if not song_queue:
+            current_song = None
+            await safe_disconnect(ctx)
+            return
+        song = song_queue.pop(0)
+        current_song = song
+
+    audio_url = song.get("audio_url")
+    if not audio_url:
+        await ctx.send("⚠️ Couldn't get a playable stream for this track.")
+        if song_queue:
+            await play_next(ctx)
+        return
+
+    source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options)
+
+    def after_playback(error):
+        if error:
+            print(f"Playback error: {error}")
+        if ctx.voice_client and ctx.voice_client.is_connected():
+            future = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Error in play_next {e}")
+
+    ctx.voice_client.play(source, after=after_playback)
+
+    title = song.get("title", "Unknown")
+    webpage_url = song.get("webpage_url", "")
+    duration = song.get("duration") or 0
+    thumbnail = song.get("thumbnail")
+    uploader = song.get("uploader") or "Unknown"
+    views = song.get("views")
+    likes = song.get("likes")
+
+    minutes, seconds = divmod(duration, 60)
+    duration_text = f"{minutes}:{seconds:02d}"
+
+    embed = discord.Embed(
+        title="🎶 Now Playing",
+        description=f"**[{title}]({webpage_url})**",
+        colour=discord.Colour.red(),
+        url=webpage_url
+    )
+    embed.add_field(name="⏱ Duration", value=duration_text, inline=True)
+    embed.add_field(name="📺 Uploader", value=uploader, inline=True)
+    embed.add_field(name="🔁 Loop", value="ON" if loop_song else "OFF", inline=True)
+
+    if views is not None:
+        embed.add_field(name="👀 Views", value=f"{views:,}", inline=True)
+
+    if likes is not None:
+        embed.add_field(name="👍 Likes", value=f"{likes:,}", inline=True)
+
+    embed.add_field(name="📂 Queue", value=str(len(song_queue)), inline=True)
+
+    if thumbnail:
+        embed.set_image(url=thumbnail)
+
+    embed.set_footer(text="Use ;queue to view upcoming songs.")
+
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def join(ctx):
@@ -919,15 +950,31 @@ async def join(ctx):
 
 @bot.command()
 async def play(ctx, *, query):
+    if not ctx.author.voice:
+        return await ctx.send("⚠️ You must be in a voice channel!")
     if not ctx.voice_client:
         await join(ctx)
     if not ctx.voice_client:
         return
-    song_queue.append(query)
-    if not ctx.voice_client.is_playing():
-        await play_next(ctx)
+
+    try:
+        song = await get_song_info(query)
+    except Exception as e:
+        return await ctx.send(f"Couldn't load this track: {e}")
+
+    if not song.get("audio_url"):
+        return await ctx.send("⚠️ Couldn't get a playable stream for that track.")
+
+    song_queue.append(song)
+
+    if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
+        if song.get("webpage_url"):
+            await ctx.send(f"➕ Added to queue: **[{song['title']}]({song['webpage_url']})**")
+        else:
+            await ctx.send(f"➕ Added to queue: **{song['title']}**")
     else:
-        await ctx.send(f"➕ Added to queue: {query}")
+        await play_next(ctx)
+    return None
 
 @bot.command()
 async def pause(ctx):
@@ -947,7 +994,7 @@ async def resume(ctx):
 
 @bot.command()
 async def skip(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
+    if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
         ctx.voice_client.stop()
         await ctx.send("⏭ Skipped the song")
     else:
@@ -955,38 +1002,58 @@ async def skip(ctx):
 
 @bot.command()
 async def queue(ctx):
+    global current_song
+
+    def trim(text, limit=60):
+        return text if len(text) <= limit else text[:limit - 3] + "..."
+
+    if not current_song and not song_queue:
+        return await ctx.send("📭 Queue is empty!")
+
+    lines = []
+
+    if current_song:
+        lines.append(f"**Now Playing:**\n🎶 **[{trim(current_song['title'])}]({current_song['webpage_url']})**")
+
     if song_queue:
-        embed = discord.Embed(
-            title="🎶 Queue",
-            colour=discord.Color.green()
+        queue_text = "\n".join(
+            f"`{i:>2}.` **[{trim(song['title'])}]({song['webpage_url']})**"
+            for i, song in enumerate(song_queue, start=1)
         )
-        for i, song in enumerate(song_queue, start=1):
-            embed.add_field(
-                name=f"{i}.",
-                value=song,
-                inline=False
-            )
-        await ctx.send(embed=embed)
+        lines.append(f"**Up Next:**\n{queue_text}")
     else:
-        await ctx.send("📭 Queue is empty!")
+        lines.append("**Up Next:**\nNo songs queued.")
+
+    embed = discord.Embed(
+        title="🎼 Music Queue",
+        description="\n\n".join(lines),
+        colour=discord.Color.blurple()
+    )
+
+    embed.set_footer(text=f"Total queued: {len(song_queue)} | Loop: {'On' if loop_song else 'Off'}")
+
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def leave(ctx):
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-        await ctx.send("👋 Left the voice channel")
-    else:
-        await ctx.send("⚠️ Not in a voice channel!")
+    global current_song
+    song_queue.clear()
+    current_song = None
+    await safe_disconnect(ctx)
 
 @bot.command()
 async def loop(ctx, mode: str = "off"):
     global loop_song
-    if mode.lower() == "on":
+    if mode is None:
+        loop_song = not loop_song
+    elif mode.lower() == "on":
         loop_song = True
-        await ctx.send("🔁 Looping current song enabled")
-    else:
+    elif mode.lower() == "off":
         loop_song = False
-        await ctx.send("🔁 Looping disabled")
+    else:
+        return await ctx.send("⚠️ Use `on` or `off`.")
+
+    await ctx.send(f"🔁 Loop is now **{'ON' if loop_song else 'OFF'}**")
 
 @bot.command()
 async def shuffle(ctx):
@@ -1003,6 +1070,10 @@ async def volume(ctx, volume: int):
     else:
         await ctx.send("⚠️ No song is playing!")
 
+async def safe_disconnect(ctx):
+    if ctx.voice_client and ctx.voice_client.is_connected():
+        await ctx.voice_client.disconnect()
+        await ctx.send("👋 Left the voice channel")
 
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
