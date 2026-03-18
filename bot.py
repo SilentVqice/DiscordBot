@@ -821,7 +821,7 @@ ytdl_format_options = {
     "quiet": True,
     "default_search": "auto",
     "js_runtimes": {
-        "deno": {}
+        "node": {}
     },
     "extractor_args": {
         "youtube": {
@@ -838,6 +838,7 @@ ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 song_queue = []
 loop_song = False
 current_song = None
+now_playing_message = None
 
 async def get_song_info(query):
     loop = asyncio.get_running_loop()
@@ -862,8 +863,58 @@ async def get_song_info(query):
         "likes": info.get("like_count"),
     }
 
+def build_now_playing_embed(song):
+    title = song.get("title", "Unknown")
+    webpage_url = song.get("webpage_url", "")
+    duration = song.get("duration") or 0
+    thumbnail = song.get("thumbnail")
+    uploader = song.get("uploader") or "Unknown"
+    views = song.get("views")
+    likes = song.get("likes")
+
+    minutes, seconds = divmod(duration, 60)
+    duration_text = f"{minutes}:{seconds:02d}"
+
+    embed = discord.Embed(
+        title="🎶 Now Playing",
+        description=f"**[{title}]({webpage_url})**" if webpage_url else f"**{title}**",
+        colour=discord.Colour.red(),
+        url=webpage_url if webpage_url else None
+    )
+
+    embed.add_field(name="⏱ Duration", value=duration_text, inline=True)
+    embed.add_field(name="📺 Uploader", value=uploader, inline=True)
+    embed.add_field(name="🔁 Loop", value="ON" if loop_song else "OFF", inline=True)
+
+    if views is not None:
+        embed.add_field(name="👀 Views", value=f"{views:,}", inline=True)
+
+    if likes is not None:
+        embed.add_field(name="👍 Likes", value=f"{likes:,}", inline=True)
+
+    embed.add_field(name="📂 Queue", value=str(len(song_queue)), inline=True)
+
+    if thumbnail:
+        embed.set_image(url=thumbnail)
+
+    embed.set_footer(text="Use ;queue to view upcoming songs.")
+    return embed
+
+
+async def update_now_playing_embed():
+    global now_playing_message, current_song
+
+    if not now_playing_message or not current_song:
+        return
+
+    try:
+        embed = build_now_playing_embed(current_song)
+        await now_playing_message.edit(embed=embed)
+    except Exception as e:
+        print(f"Failed to update now playing embed: {e}")
+
 async def play_next(ctx):
-    global loop_song, current_song
+    global loop_song, current_song, now_playing_message
 
     if not ctx.voice_client or not ctx.voice_client.is_connected():
         return
@@ -873,6 +924,7 @@ async def play_next(ctx):
     else:
         if not song_queue:
             current_song = None
+            now_playing_message = None
             await safe_disconnect(ctx)
             return
         song = song_queue.pop(0)
@@ -899,41 +951,8 @@ async def play_next(ctx):
 
     ctx.voice_client.play(source, after=after_playback)
 
-    title = song.get("title", "Unknown")
-    webpage_url = song.get("webpage_url", "")
-    duration = song.get("duration") or 0
-    thumbnail = song.get("thumbnail")
-    uploader = song.get("uploader") or "Unknown"
-    views = song.get("views")
-    likes = song.get("likes")
-
-    minutes, seconds = divmod(duration, 60)
-    duration_text = f"{minutes}:{seconds:02d}"
-
-    embed = discord.Embed(
-        title="🎶 Now Playing",
-        description=f"**[{title}]({webpage_url})**",
-        colour=discord.Colour.red(),
-        url=webpage_url
-    )
-    embed.add_field(name="⏱ Duration", value=duration_text, inline=True)
-    embed.add_field(name="📺 Uploader", value=uploader, inline=True)
-    embed.add_field(name="🔁 Loop", value="ON" if loop_song else "OFF", inline=True)
-
-    if views is not None:
-        embed.add_field(name="👀 Views", value=f"{views:,}", inline=True)
-
-    if likes is not None:
-        embed.add_field(name="👍 Likes", value=f"{likes:,}", inline=True)
-
-    embed.add_field(name="📂 Queue", value=str(len(song_queue)), inline=True)
-
-    if thumbnail:
-        embed.set_image(url=thumbnail)
-
-    embed.set_footer(text="Use ;queue to view upcoming songs.")
-
-    await ctx.send(embed=embed)
+    embed = build_now_playing_embed(song)
+    now_playing_message = await ctx.send(embed=embed)
 
 @bot.command()
 async def join(ctx):
@@ -1036,29 +1055,34 @@ async def queue(ctx):
 
 @bot.command()
 async def leave(ctx):
-    global current_song
+    global current_song, now_playing_message
     song_queue.clear()
     current_song = None
+    now_playing_message = None
     await safe_disconnect(ctx)
 
 @bot.command()
-async def loop(ctx, mode: str = "off"):
+async def loop(ctx, mode: str = None):
     global loop_song
     if mode is None:
         loop_song = not loop_song
-    elif mode.lower() == "on":
-        loop_song = True
-    elif mode.lower() == "off":
-        loop_song = False
     else:
-        return await ctx.send("⚠️ Use `on` or `off`.")
+        mode = mode.lower().strip()
+        if mode in ("on", "true", "yes", "1"):
+            loop_song = True
+        elif mode in ("off", "false", "no", "0"):
+            loop_song = False
+        else:
+            return await ctx.send("⚠️ Use `;loop`, `;loop on`, or `;loop off`.")
 
     await ctx.send(f"🔁 Loop is now **{'ON' if loop_song else 'OFF'}**")
+    await update_now_playing_embed()
 
 @bot.command()
 async def shuffle(ctx):
     random.shuffle(song_queue)
     await ctx.send("🔀 Queue shuffled")
+    await update_now_playing_embed()
 
 @bot.command()
 async def volume(ctx, volume: int):
@@ -1071,8 +1095,10 @@ async def volume(ctx, volume: int):
         await ctx.send("⚠️ No song is playing!")
 
 async def safe_disconnect(ctx):
+    global now_playing_message
     if ctx.voice_client and ctx.voice_client.is_connected():
         await ctx.voice_client.disconnect()
+        now_playing_message = None
         await ctx.send("👋 Left the voice channel")
 
 
