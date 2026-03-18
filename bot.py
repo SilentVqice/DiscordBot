@@ -34,7 +34,7 @@ async def on_ready():
 
 ##################################################### H.E.L.P #####################################################
 @bot.command()
-async def helpcommands(ctx):
+async def help(ctx):
     embed = discord.Embed(
         title="Bot Commands",
         description="Here are all the commands you can use:",
