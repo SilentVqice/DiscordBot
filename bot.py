@@ -820,6 +820,9 @@ ytdl_format_options = {
     "noplaylist": True,
     "quiet": True,
     "default_search": "auto",
+    "js_runtimes": {
+        "deno": {}
+    },
     "extractor_args": {
         "youtube": {
             "player_skip": ["js"],
