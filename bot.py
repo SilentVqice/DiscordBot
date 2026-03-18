@@ -23,7 +23,7 @@ intents.members = True
 intents.reactions = True
 intents.presences = True
 
-bot = Bot(command_prefix=';', intents=intents)
+bot = Bot(command_prefix=';', intents=intents, help_command=None)
 
 # BOT START ---------------------------------------------------------------------------------------------------------
 @bot.event
