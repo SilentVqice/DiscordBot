@@ -826,7 +826,10 @@ ytdl_format_options = {
         }
     },
 }
-ffmpeg_options = {"options": "-vn"}
+ffmpeg_options = {
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn"
+}
 
 ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 song_queue = []
@@ -874,7 +877,12 @@ async def play_next(ctx):
         thumbnail = info.get("thumbnail")
         source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options)
 
-        ctx.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop))
+        def after_playback(error):
+            if error:
+                print(f"Playback error: {error}")
+            asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+
+        ctx.voice_client.play(source, after=after_playback)
 
         embed = discord.Embed(
             title="🎶 Now Playing",
