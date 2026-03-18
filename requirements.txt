@@ -3,4 +3,5 @@ python-dotenv
 aiohttp
 yt-dlp
 PyNaCl
+Pillow
 davey
