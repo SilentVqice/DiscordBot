@@ -48,40 +48,237 @@ def voice_runtime_info():
 ############################################ R.I.C.H  P.R.E.S.E.N.C.E. ############################################
 
 ##################################################### H.E.L.P #####################################################
-@bot.command()
-async def help(ctx):
-    embed = discord.Embed(
-        title="Bot Commands",
-        description="Here are all the commands you can use:",
-        color=discord.Color.blue()
-    )
+help_data = {
+    "Moderation": {
+        "ban": {
+            "usage": ";ban @user [reason]",
+            "description": "Bans a member from the server.",
+            "example": [";ban @user Breaking rules"]
+        },
+        "unban": {
+            "usage": ";unban <user_id> [reason]",
+            "description": "Unbans a member by their Discord user ID.",
+            "example": [";unban 123456789012345678 Appeal accepted"]
+        },
+        "kick": {
+            "usage": ";kick @user [reason]",
+            "description": "Kicks a member from the server.",
+            "example": [";kick @user Spamming"]
+        },
+        "mute": {
+            "usage": ";mute @user [duration] [reason]",
+            "description": "Mutes a member, optionally for a set time.",
+            "example": [";mute @user 10m Spam"]
+        },
+        "unmute": {
+            "usage": ";unmute @user [reason]",
+            "description": "Unmutes a member by removing the muted role.",
+            "example": [";unmute @user"]
+        }
+    },
 
-    commands_by_category = {
-        "Moderation": {
-            ";ban": "Bans a member from the server. - ;ban [@user] [time] [reason]",
-            ";unban": "Unbans a member by their Discord user ID. - ;unban [user_id] [reason]",
-            ";kick": "Kicks a member from the server. - ;kick [@user] [reason]",
-            ";mute": "Mutes a member, optionally for a set time. - ;mute [@user] [time] [reason]",
-            ";unmute": "Unmutes a member by removing the Muted role. - ;unmute [@user] [reason]",
+    "Utility": {
+        "help":{
+            "usage": ";help [command]",
+            "description": "Shows all commands or detailed help for one command.",
+            "example": [";help", ";help play"]
         },
-        "Utility": {
-            ";purge": "Deletes a number of messages from the channel. - ;purge [amount]",
-            ";info": "Shows info about a user or yourself. - ;info [@user]"
+        "info": {
+            "usage": ";info [@user]",
+            "description": "Shows information about you or another user.",
+            "example": [";info", ";info @Velourie"]
         },
-        "Fun": {
-            ";kitty": "Sends a random cat image. - ;kitty",
-            ";trivia": "Starts a trivia question. - ;trivia",
-            ";flag": "Starts a country flag trivia question. - ;flag",
-            ";connect4": "Starts an interactive Connect 4 game. - ;connect4 [@user]"
+        "purge": {
+            "usage": ";purge <amount>",
+            "description": "Deletes a number of messages from the channel.",
+            "example": [";purge 10"]
+        }
+    },
+    "Fun": {
+        "kitty": {
+            "usage": ";kitty",
+            "description": "Sends a random cat image.",
+            "example": [";kitty"]
+        },
+        "bunny": {
+            "usage": ";bunny",
+            "description": "Sends a random bunny image.",
+            "example": [";bunny"]
+        },
+        "trivia": {
+            "usage": ";trivia",
+            "description": "Starts a trivia question.",
+            "example": [";trivia"]
+        },
+        "flag": {
+            "usage": ";flag",
+            "description": "Starts a country flag guessing game.",
+            "example": [";flag"]
+        },
+        "connect4": {
+            "usage": ";connect4 [@user]",
+            "description": "Play Connect 4 against a user or the bot.",
+            "example": [";connect4", ";connect4 @user", ";c4 @user"],
+            "aliases": ["c4"]
+        },
+        "rps": {
+            "usage": ";rps [@user]",
+            "description": "Play Rock, Paper, Scrissors against a user or the bot.",
+            "example": [";rps", ";rps @user"]
+        }
+    },
+    "Music": {
+        "join": {
+            "usage": ";join",
+            "description": "Joins your current voice channel.",
+            "example": [";join"]
+        },
+        "play": {
+            "usage": ";play <song name or URL>",
+            "description": "Adds a song to the queue or starts playback.",
+            "example": [";play Despacito", ";play https://youtube.com/watch?v=..."]
+        },
+        "pause": {
+            "usage": ";pause",
+            "description": "Pauses the current song.",
+            "example": [";pause"]
+        },
+        "resume": {
+            "usage": ";resume",
+            "description": "Resumes the paused song.",
+            "example": [";resume"]
+        },
+        "skip": {
+            "usage": ";skip",
+            "description": "Skips the current song.",
+            "example": [";skip"]
+        },
+        "queue": {
+            "usage": ";queue",
+            "description": "Shows the current queue.",
+            "example": [";queue"]
+        },
+        "leave": {
+            "usage": ";leave",
+            "description": "Stops playback and disconnects from voice.",
+            "example": [";leave"]
+        },
+        "loop": {
+            "usage": ";loop [on/off]",
+            "description": "Toggles looping for the current song.",
+            "example": [";loop", ";loop on", ";loop off"]
+        },
+        "shuffle": {
+            "usage": ";shuffle",
+            "description": "Shuffles the current queue.",
+            "example": [";shuffle"]
+        },
+        "volume": {
+            "usage": ";volume <0-200>",
+            "description": "Sets playback volume.",
+            "example": [";volume 50", ";volume 100"]
+        },
+        "slowed": {
+            "usage": ";slowed [on/off]",
+            "description": "Toggles slowed mode.",
+            "example": [";slowed", ";slowed on", ";slowed off"]
+            },
+        "sped": {
+            "usage": ";sped [on/off]",
+            "description": "Toggles sped mode.",
+            "example": [";sped", ";sped on", ";sped off"]
+        },
+        "lyrics": {
+            "usage": ";lyrics",
+            "description": "Shows lyrics for the current track.",
+            "example": [";lyrics"]
         }
     }
+}
 
-    # Add each category and its commands to the embed
-    for category, commands_dict in commands_by_category.items():
-        value = "\n".join(f"`{name}` - {desc}" for name, desc in commands_dict.items())
-        embed.add_field(name=category, value=value, inline=False)
+def find_help_entry(command_name: str):
+    command_name = command_name.lower()
 
-    embed.set_footer(text="Type ;help command for more info on a command")
+    for category, commands_dict in help_data.items():
+        for name, info in commands_dict.items():
+            aliases = [a.lower() for a in info.get("aliases", [])]
+            if command_name == name.lower() or command_name in aliases:
+                return category, name, info
+
+    return None, None, None
+
+@bot.command(name="help")
+async def help_command(ctx, command_name: str = None):
+    if command_name is None:
+        embed = discord.Embed(
+            title="✨ Bot Help",
+            description=(
+                "Here are all available commands.\n"
+                "Use `;help <command>` for detailed information."
+            ),
+            colour=discord.Color.blurple()
+        )
+
+        embed.set_author(
+            name=bot.user.name,
+            icon_url=bot.user.display_avatar.url if bot.user else None
+        )
+
+        category_emojis = {
+            "Utility": "🛠️",
+            "Moderation": "🛡️",
+            "Fun": "🎮",
+            "Music": "🎵"
+        }
+
+        for category, commands_dict in help_data.items():
+            emoji = category_emojis.get(category, "•")
+            value = "\n".join(
+                f"`;{name}` — {info['description']}"
+                for name, info in commands_dict.items()
+            )
+            embed.add_field(
+                name=f"{emoji} {category}",
+                value=value,
+                inline=False
+            )
+
+        embed.add_field(
+            name="Made with love by",
+            value=f"<@465610916873109504> and <@812269541731074078>",
+            inline=False
+        )
+        embed.set_footer(text=f"Total commands: {sum(len(x) for x in help_data.values())}")
+        return await ctx.send(embed=embed)
+
+    category, name, info = find_help_entry(command_name)
+
+    if info is None:
+        return await ctx.send(f"⚠️ No help found for `{command_name}`.")
+
+    embed = discord.Embed(
+        title = f"📘 ;{name}",
+        description=info["description"],
+        colour=discord.Color.blue()
+    )
+
+    embed.add_field(name="Usage", value=f"`{info['usage']}`", inline=False)
+
+    examples = "\n".join(f"`{example}`" for example in info.get("example", []))
+    if examples:
+        embed.add_field(name="Examples", value=examples, inline=False)
+
+    aliases = info.get("aliases")
+    if aliases:
+        embed.add_field(
+            name="Aliases",
+            value=", ".join(f"`;{alias}`" for alias in aliases),
+            inline=False
+        )
+
+    embed.add_field(name="Category", value=category, inline=True)
+    embed.set_footer(text="< > = required | [ ] = optional")
+
     await ctx.send(embed=embed)
 
 #################################################  U.T.I.L.I.T.Y  ##################################################
@@ -354,7 +551,7 @@ async def info(ctx, member: discord.Member = None):
     If no member is mentioned, it shows info about the author"""
     member = member or ctx.author
 
-    roles = [role.mention for role in member.roles if role.name != "@everyone"]
+    roles = [role.mention for role in reversed(member.roles) if role.name != "@everyone"]
     roles_display = ", ".join(roles) if roles else "No roles."
     roles_count = len(roles)
 
@@ -363,15 +560,16 @@ async def info(ctx, member: discord.Member = None):
 
     allowed = AllowedMentions(users=True)
     embed = discord.Embed(
-        title=f"Info on {member.display_name}",
+        title=f"User info",
         colour=member.color
     )
+    embed.add_field(name="Member", value=member.mention, inline=True)
 
     embed.set_author(name=str(member),icon_url=member.avatar.url if member.avatar else None)
     embed.set_thumbnail(url=member.avatar.url if member.avatar else None)
     embed.add_field(name="Username", value=str(member), inline=True)
-    embed.add_field(name="User ID", value=member.id, inline=True)
-    embed.add_field(name="Account Created", value=created, inline=False)
+    embed.add_field(name="User ID", value=member.id, inline=False)
+    embed.add_field(name="Account Created", value=created, inline=True)
     embed.add_field(name="Joined Server", value=joined, inline=True)
     embed.add_field(name=f"Roles [{roles_count}]", value=roles_display, inline=False)
 
