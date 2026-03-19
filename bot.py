@@ -158,6 +158,16 @@ help_data = {
             "description": "Shows the current queue.",
             "example": [";queue"]
         },
+        "remove": {
+            "usage": ";remove <number>",
+            "description": "Removes a song from the queue.",
+            "example": [";remove 2"]
+        },
+        "clear": {
+            "usage": ";clear",
+            "description": "Clears the queue.",
+            "example": [";clear"]
+        },
         "leave": {
             "usage": ";leave",
             "description": "Stops playback and disconnects from voice.",
@@ -187,6 +197,11 @@ help_data = {
             "usage": ";sped [on/off]",
             "description": "Toggles sped mode.",
             "example": [";sped", ";sped on", ";sped off"]
+        },
+        "bassboost": {
+            "usage": ";bassboost [on/off]",
+            "description": "Toggles bassboost mode.",
+            "example": [";bassboost", ";bassboost on", ";bassboost off"]
         },
         "lyrics": {
             "usage": ";lyrics",
@@ -976,6 +991,9 @@ async def rps(ctx, opponent: discord.Member = None):
     )
     await ctx.send(embed=embed, view=view)
     return None
+
+# TIC TAC TOE ------------------------------------------------------------------------------------------------------
+
 # CONNECT 4 --------------------------------------------------------------------------------------------------------
 class Connect4Button(discord.ui.Button):
     def __init__(self, column: int, row: int):
@@ -1168,6 +1186,7 @@ now_playing_message = None
 now_playing_updater = None
 slowed_mode = False
 sped_mode = False
+bassboost_mode = False
 play_started_at = None
 paused_at = None
 paused_total = 0.0
@@ -1222,12 +1241,7 @@ def build_now_playing_embed(song):
     else:
         status_text = "Paused"
 
-    if slowed_mode:
-        mode_text = "Slowed"
-    elif sped_mode:
-        mode_text = "Sped"
-    else:
-        mode_text = "Normal"
+    mode_text = get_mode_text()
 
     embed = discord.Embed(
         title="🎶 Now Playing",
@@ -1404,7 +1418,7 @@ class MusicControls(discord.ui.View):
 
     @discord.ui.button(label="Mode", emoji="⚙️", style=discord.ButtonStyle.primary)
     async def mode_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        global slowed_mode, sped_mode
+        global slowed_mode, sped_mode, bassboost_mode
         vc = interaction.guild.voice_client if interaction.guild else None
         if vc is None or current_song is None:
             return await interaction.response.send_message(
@@ -1495,23 +1509,33 @@ class MusicControls(discord.ui.View):
 
         self.stop()
 
-def make_audio_source(audio_url, start_at=0.0, slowed=False, sped=False):
+def make_audio_source(audio_url, start_at=0.0, slowed=False, sped=False, bassboost=False):
     before = ffmpeg_options["before_options"]
     if start_at and start_at > 0:
         before = f"{before} -ss {start_at:.2f}"
 
+    filters = []
+
     if slowed:
-        options = (
-            '-vn -filter:a '
-            '"atempo=0.90,asetrate=44100*0.90,aresample=44100,'
-            'aecho=0.8:0.88:40:0.08"'
-        )
+        filters.extend([
+            "atempo=0.90",
+            "asetrate=44100*0.90",
+            "aresample=44100",
+            "aecho=0.8:0.88:40:0.08",
+        ])
     elif sped:
-        options = (
-            '-vn -filter:a '
-            '"atempo=1.12,asetrate=44100*1.12,aresample=44100,'
-            'aecho=0.8:0.88:6:0.08"'
-        )
+        filters.extend([
+            "atempo=1.12",
+            "asetrate=44100*1.12",
+            "aresample=44100",
+            "aecho=0.8:0.88:6:0.08",
+        ])
+
+    if bassboost:
+        filters.extend(["bass=g=4:f=85:w=0.5:m=0.7,volume=0.95"])
+
+    if filters:
+        options = f'-vn -filter:a "{",".join(filters)}"'
     else:
         options = "-vn"
 
@@ -1558,11 +1582,17 @@ def build_progress_bar(position: float, duration: int, length: int = 16) -> str:
     return bar
 
 def get_mode_text() -> str:
+    parts = []
+
     if slowed_mode:
-        return "Slowed"
-    if sped_mode:
-        return "Sped"
-    return "Normal"
+        parts.append("Slowed")
+    elif sped_mode:
+        parts.append("Sped")
+
+    if bassboost_mode:
+        parts.append("BassBoost")
+
+    return " + ".join(parts) if parts else "Normal"
 
 async def apply_current_mode(vc: discord.VoiceClient) -> tuple[bool, str | None]:
     global play_started_at, paused_at, paused_total, current_song
@@ -1595,17 +1625,11 @@ async def apply_current_mode(vc: discord.VoiceClient) -> tuple[bool, str | None]
         audio_url,
         start_at=position,
         slowed=slowed_mode,
-        sped=sped_mode
+        sped=sped_mode,
+        bassboost=bassboost_mode
     )
 
-    old_source = vc.source
     vc.source = new_source
-
-    try:
-        if old_source:
-            old_source.cleanup()
-    except Exception:
-        pass
 
     play_started_at = time.monotonic() - position
     paused_at = None
@@ -1783,7 +1807,8 @@ async def play_next(ctx):
         audio_url,
         start_at=0.0,
         slowed=slowed_mode,
-        sped=sped_mode
+        sped=sped_mode,
+        bassboost=bassboost_mode
     )
 
 
@@ -1823,28 +1848,61 @@ async def play_next(ctx):
     now_playing_updater = asyncio.create_task(
         now_playing_progress_loop(current_song["url"])
     )
+
 @bot.command()
 async def join(ctx):
-    if ctx.author.voice:
-        if not getattr(discord.voice_client, "has_nacl", False):
-            return await ctx.send(f"Voice support is missing. Install `PyNaCl` and `davey`, then restart the bot.\n{voice_runtime_info()}")
-        try:
-            await ctx.author.voice.channel.connect()
-            await ctx.send(embed=success_embed("Connected to your voice channel!", title="Voice Connected"))
-        except RuntimeError as e:
-            return await ctx.send(
-                embed=error_embed(
-                    f"Voice connect failed:\n```py\n{e}\n```\n{voice_runtime_info()}",
-                    title="Connection Failed"
-                )
+    if not ctx.author.voice:
+        return await ctx.send(
+            embed=warning_embed("You must be in a voice channel!", title="Voice Required")
+        )
+
+    if ctx.voice_client and ctx.voice_client.channel != ctx.author.voice.channel:
+        return await ctx.send(
+            embed=warning_embed(
+                f"I'm already being used in **{ctx.voice_client.channel}**.",
+                title="Bot Is Busy"
             )
-    else:
-        await ctx.send(embed=warning_embed("You must be in a voice channel!"))
+        )
+
+    if ctx.voice_client and ctx.voice_client.channel == ctx.author.voice.channel:
+        return await ctx.send(
+            embed=info_embed("I'm already in your voice channel.", title="Already Connected")
+        )
+
+    if not getattr(discord.voice_client, "has_nacl", False):
+        return await ctx.send(
+            embed=error_embed(
+                f"Voice support is missing. Install `PyNaCl` and `davey`, then restart the bot.\n{voice_runtime_info()}",
+                title="Voice Support Missing"
+            )
+        )
+
+    try:
+        await ctx.author.voice.channel.connect()
+        await ctx.send(
+            embed=success_embed("Connected to your voice channel!", title="Voice Connected")
+        )
+    except RuntimeError as e:
+        return await ctx.send(
+            embed=error_embed(
+                f"Voice connect failed:\n```py\n{e}\n```\n{voice_runtime_info()}",
+                title="Connection Failed"
+            )
+        )
 
 @bot.command()
 async def play(ctx, *, query):
     if not ctx.author.voice:
-        return await ctx.send(embed=warning_embed("You must be in a voice channel!"))
+        return await ctx.send(embed=warning_embed("You must be in a voice channel!", title="Voice Required"))
+
+    if ctx.voice_client and ctx.voice_client.channel != ctx.author.voice.channel:
+        return await ctx.send(
+            embed=warning_embed(
+                f"I'm already being used in **{ctx.voice_client.channel}**.",
+                title="Bot Is Busy"
+            )
+        )
+
     if not ctx.voice_client:
         await join(ctx)
     if not ctx.voice_client:
@@ -2035,8 +2093,78 @@ async def loop(ctx, mode: str = None):
 
 @bot.command()
 async def shuffle(ctx):
+    if not song_queue:
+        return await ctx.send(
+            embed=warning_embed("Queue is empty!", title="Empty Queue")
+        )
+
     random.shuffle(song_queue)
     await ctx.send(embed=info_embed("Queue shuffled.", title="Shuffled"))
+    await update_now_playing_embed()
+@bot.command()
+async def remove(ctx, position: int):
+    if not song_queue:
+        return await ctx.send(
+            embed=warning_embed("Queue is empty!", title="Empty Queue")
+        )
+
+    if position < 1 or position > len(song_queue):
+        return await ctx.send(
+            embed=warning_embed(
+                f"Choose a number between `1` and `{len(song_queue)}`.",
+                title="Invalid Queue Position"
+            )
+        )
+
+    removed_song = song_queue.pop(position - 1)
+
+    title = removed_song.get("title", "Unknown")
+    url = removed_song.get("webpage_url")
+
+    if url:
+        description = f"Removed **[{title}]({url})** from the queue."
+    else:
+        description = f"Removed **{title}** from the queue."
+
+    await ctx.send(embed=info_embed(description, title="Removed"))
+    await update_now_playing_embed()
+
+@remove.error
+async def remove_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        return await ctx.send(
+            embed=warning_embed(
+                "Use `;remove <queue number>`",
+                title="Missing Argument"
+            )
+        )
+
+    if isinstance(error, commands.BadArgument):
+        return await ctx.send(
+            embed=warning_embed(
+                "Queue position must be a number. Example: `;remove 2`",
+                title="Invalid Argument"
+            )
+        )
+
+    raise error
+
+@bot.command()
+async def clear(ctx):
+    if not song_queue:
+        return await ctx.send(
+            embed=warning_embed("Queue is already empty!", title="Empty Queue")
+        )
+
+    cleared = len(song_queue)
+    song_queue.clear()
+
+    await ctx.send(
+        embed=info_embed(
+            f"Cleared **{cleared}** song(s) from the queue.",
+            title="Queue Cleared"
+        )
+    )
     await update_now_playing_embed()
 
 @bot.command()
@@ -2051,7 +2179,8 @@ async def volume(ctx, volume: int):
 
 @bot.command()
 async def slowed(ctx, mode: str | None = None):
-    global slowed_mode,sped_mode, play_started_at, paused_at, paused_total, current_song
+    global slowed_mode, sped_mode, bassboost_mode
+    global play_started_at, paused_at, paused_total, current_song
 
     if mode is None:
         slowed_mode = not slowed_mode
@@ -2114,16 +2243,15 @@ async def slowed(ctx, mode: str | None = None):
             paused_total += time.monotonic() - paused_at
             paused_at = None
 
-    new_source = make_audio_source(audio_url, start_at=position, slowed=slowed_mode)
+    new_source = make_audio_source(
+        audio_url,
+        start_at=position,
+        slowed=slowed_mode,
+        sped=sped_mode,
+        bassboost=bassboost_mode
+    )
 
-    old_source = ctx.voice_client.source
     ctx.voice_client.source = new_source
-
-    try:
-        if old_source:
-            old_source.cleanup()
-    except Exception:
-        pass
 
     play_started_at = time.monotonic() - position
     paused_at = None
@@ -2137,7 +2265,7 @@ async def slowed(ctx, mode: str | None = None):
 
 @bot.command()
 async def sped(ctx, mode: str = None):
-    global sped_mode, slowed_mode
+    global sped_mode, slowed_mode, bassboost_mode
     global play_started_at, paused_at, paused_total, current_song
 
     if mode is None:
@@ -2203,18 +2331,94 @@ async def sped(ctx, mode: str = None):
     new_source = make_audio_source(
         audio_url,
         start_at=position,
-        slowed=False,
-        sped=sped_mode
+        slowed=slowed_mode,
+        sped=sped_mode,
+        bassboost=bassboost_mode
     )
 
-    old_source = ctx.voice_client.source
     ctx.voice_client.source = new_source
 
+    play_started_at = time.monotonic() - position
+    paused_at = None
+
+    if was_paused:
+        ctx.voice_client.pause()
+        paused_at = time.monotonic()
+
+    await update_now_playing_embed()
+    return None
+
+@bot.command()
+async def bassboost(ctx, mode: str | None = None):
+    global bassboost_mode, slowed_mode, sped_mode
+    global play_started_at, paused_at, paused_total, current_song
+
+    if mode is None:
+        bassboost_mode = not bassboost_mode
+    else:
+        mode = mode.lower().strip()
+        if mode in ("on", "true", "yes", "1"):
+            bassboost_mode = True
+        elif mode in ("off", "false", "no", "0"):
+            bassboost_mode = False
+        else:
+            return await ctx.send(
+                embed=warning_embed(
+                    "Use `;bassboost`, `;bassboost on`, or `;bassboost off`.",
+                    title="Invalid Usage"
+                )
+            )
+
+    await ctx.send(
+        embed=info_embed(
+            f"BassBoost mode is now **{'ON' if bassboost_mode else 'OFF'}**.",
+            title="Mode Updated"
+        )
+    )
+
+    if not ctx.voice_client or not current_song:
+        return
+
+    if not (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+        return
+
     try:
-        if old_source:
-            old_source.cleanup()
-    except Exception:
-        pass
+        fresh_song = await get_song_info(current_song["url"])
+    except Exception as e:
+        return await ctx.send(
+            embed=error_embed(
+                f"Couldn't reload the current track:\n```py\n{e}\n```",
+                title="Reload Failed"
+            )
+        )
+
+    audio_url = fresh_song.get("audio_url")
+    if not audio_url:
+        return await ctx.send(
+            embed=error_embed(
+                "Couldn't rebuild the current stream.",
+                title="Stream Rebuild Failed"
+            )
+        )
+
+    position = get_current_playback_position()
+
+    was_paused = ctx.voice_client.is_paused()
+    if was_paused:
+        ctx.voice_client.resume()
+        if paused_at is not None:
+            paused_total += time.monotonic() - paused_at
+            paused_at = None
+
+    new_source = make_audio_source(
+        audio_url,
+        start_at=position,
+        slowed=slowed_mode,
+        sped=sped_mode,
+        bassboost=bassboost_mode
+    )
+
+    ctx.voice_client.source = new_source
 
     play_started_at = time.monotonic() - position
     paused_at = None
@@ -2242,6 +2446,14 @@ async def safe_disconnect(ctx):
 async def on_command_error(ctx, error):
     if ctx.command and ctx.command.has_error_handler():
         return
+
+    if isinstance(error, commands.CommandNotFound):
+        return await ctx.send(
+            embed=warning_embed(
+                "That command does not exist. Use `;help` to see available commands.",
+                title="Invalid Command"
+            )
+        )
 
     if isinstance(error, commands.MissingRequiredArgument):
         if ctx.command and ctx.command.qualified_name == "play":
