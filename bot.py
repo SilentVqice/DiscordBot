@@ -431,7 +431,12 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandInvokeError) and isinstance(error.original, RuntimeError):
         message = str(error.original).lower()
         if "library needed" in message and "voice" in message:
-            return await ctx.send(f"Voice support is missing. Install `PyNaCl` and `davey`, then restart the bot.\n{voice_runtime_info()}")
+            return await ctx.send(
+                embed=error_embed(
+                    f"Voice support is missing. Install `PyNaCl` and `davey`, then restart the bot.\n{voice_runtime_info()}",
+                    title="Voice Support Missing"
+                )
+            )
     await ctx.send(f"Command error: {error}")
 
 # WELCOME MESSAGE --------------------------------------------------------------------------------------------------
@@ -1315,14 +1320,17 @@ class MusicControls(discord.ui.View):
 
         if not vc or not vc.channel:
             await interaction.response.send_message(
-                "⚠️ I'm not in a voice channel.",
+                embed=warning_embed("I'm not in a voice channel.", title="Not Connected"),
                 ephemeral=True
             )
             return False
 
         if not interaction.user.voice or interaction.user.voice.channel != vc.channel:
             await interaction.response.send_message(
-                "⚠️ You must be in my voice channel to use these controls.",
+                embed=warning_embed(
+                    "You must be in my voice channel to use these controls.",
+                    title="Access Denied"
+                ),
                 ephemeral=True
             )
             return False
@@ -1350,7 +1358,10 @@ class MusicControls(discord.ui.View):
 
         vc = interaction.guild.voice_client
         if not vc:
-            await interaction.response.send_message("⚠️ Nothing is playing.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=warning_embed("Nothing is playing.", title="Nothing Playing"),
+                ephemeral=True
+            )
             return
 
         if vc.is_paused():
@@ -1364,7 +1375,10 @@ class MusicControls(discord.ui.View):
             paused_at = time.monotonic()
 
         else:
-            await interaction.response.send_message("⚠️ Nothing is playing.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=warning_embed("Nothing is playing.", title="Nothing Playing"),
+                ephemeral=True
+            )
             return
 
         await interaction.response.edit_message(
@@ -1378,7 +1392,10 @@ class MusicControls(discord.ui.View):
 
         vc = interaction.guild.voice_client
         if not vc or not (vc.is_playing() or vc.is_paused()):
-            await interaction.response.send_message("⚠️ Nothing is playing.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=warning_embed("Nothing is playing.", title="Nothing Playing"),
+                ephemeral=True
+            )
             return
 
         skip_once = True
@@ -1391,7 +1408,7 @@ class MusicControls(discord.ui.View):
         vc = interaction.guild.voice_client if interaction.guild else None
         if vc is None or current_song is None:
             return await interaction.response.send_message(
-                "⚠️ Nothing is playing.",
+                embed=warning_embed("Nothing is playing.", title="Nothing Playing"),
                 ephemeral=True
             )
 
@@ -1408,7 +1425,10 @@ class MusicControls(discord.ui.View):
         ok, error_message = await apply_current_mode(vc)
         if not ok:
             return await interaction.response.send_message(
-                error_message or "⚠️ Couldn't change mode.",
+                embed=error_embed(
+                    error_message or "Couldn't change mode.",
+                    title="Mode Change Failed"
+                ),
                 ephemeral=True
             )
 
@@ -1438,7 +1458,10 @@ class MusicControls(discord.ui.View):
 
         vc = interaction.guild.voice_client
         if not vc:
-            await interaction.response.send_message("⚠️ Nothing is playing.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=warning_embed("Nothing is playing.", title="Nothing Playing"),
+                ephemeral=True
+            )
             return
 
         song_queue.clear()
@@ -1458,7 +1481,7 @@ class MusicControls(discord.ui.View):
 
         await interaction.response.edit_message(
             content=None,
-            embed=status_embed("⏹️ Playback stopped.", discord.Color.red()),
+            embed=info_embed("Playback stopped.", title="Stopped"),
             view=self
         )
 
@@ -1545,19 +1568,19 @@ async def apply_current_mode(vc: discord.VoiceClient) -> tuple[bool, str | None]
     global play_started_at, paused_at, paused_total, current_song
 
     if current_song is None:
-        return False, "⚠️ Nothing is loaded."
+        return False, "Nothing is loaded."
 
     if not (vc.is_playing() or vc.is_paused()):
-        return False, "⚠️ Nothing is playing."
+        return False, "Nothing is playing."
 
     try:
         fresh_song = await get_song_info(current_song["url"])
     except Exception as e:
-        return False, f"⚠️ Couldn't reload the current track: {e}"
+        return False, f"Couldn't reload the current track: {e}"
 
     audio_url = fresh_song.get("audio_url")
     if not audio_url:
-        return False, "⚠️ Couldn't rebuild the current stream."
+        return False, "Couldn't rebuild the current stream."
 
     position = get_current_playback_position()
     was_paused = vc.is_paused()
@@ -1592,11 +1615,32 @@ async def apply_current_mode(vc: discord.VoiceClient) -> tuple[bool, str | None]
         paused_at = time.monotonic()
     return True, None
 
-def status_embed(
-    description:str,
-    color: discord.Color = discord.Color.blurple()
+def make_embed(
+        description: str,
+        colour: discord.Color,
+        *,
+        title: str| None = None
 ) -> discord.Embed:
-    return discord.Embed(description=description, colour=color)
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        colour=colour
+    )
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+def success_embed(description: str, *, title: str = "Success") -> discord.Embed:
+    return make_embed(f"✅ {description}", discord.Color.green(), title=title)
+
+def error_embed(description: str, *, title: str = "Error") -> discord.Embed:
+    return make_embed(f"❌ {description}", discord.Color.red(), title=title)
+
+def warning_embed(description: str, *, title: str = "Warning") -> discord.Embed:
+    return make_embed(f"⚠️ {description}", discord.Color.orange(), title=title)
+
+def info_embed(description: str, *, title: str = "Info") -> discord.Embed:
+    return make_embed(f"ℹ️ {description}", discord.Color.blurple(), title=title)
+
 
 def clean_lyrics_title(title: str) -> str:
     title = re.sub(
@@ -1706,14 +1750,19 @@ async def play_next(ctx):
     try:
         fresh_song = await get_song_info(queued_song["url"])
     except Exception as e:
-        await ctx.send(f"⚠️ Couldn't load this track: {e}")
+        await ctx.send(embed=error_embed(f"Couldn't load this track:\n```py\n{e}\n```"))
         if song_queue:
             await play_next(ctx)
         return
 
     audio_url = fresh_song.get("audio_url")
     if not audio_url:
-        await ctx.send("⚠️ Couldn't get a playable stream for this track.")
+        await ctx.send(
+            embed=error_embed(
+                "Couldn't get a playable stream for this track.",
+                title="Playback Source Failed"
+            )
+        )
         if song_queue:
             await play_next(ctx)
         return
@@ -1781,16 +1830,21 @@ async def join(ctx):
             return await ctx.send(f"Voice support is missing. Install `PyNaCl` and `davey`, then restart the bot.\n{voice_runtime_info()}")
         try:
             await ctx.author.voice.channel.connect()
-            await ctx.send(embed=status_embed("🔊 Connected to your voice channel!"))
+            await ctx.send(embed=success_embed("Connected to your voice channel!", title="Voice Connected"))
         except RuntimeError as e:
-            return await ctx.send(f"Voice connect failed: {e}\n{voice_runtime_info()}")
+            return await ctx.send(
+                embed=error_embed(
+                    f"Voice connect failed:\n```py\n{e}\n```\n{voice_runtime_info()}",
+                    title="Connection Failed"
+                )
+            )
     else:
-        await ctx.send("⚠️ You must be in a voice channel!")
+        await ctx.send(embed=warning_embed("You must be in a voice channel!"))
 
 @bot.command()
 async def play(ctx, *, query):
     if not ctx.author.voice:
-        return await ctx.send("⚠️ You must be in a voice channel!")
+        return await ctx.send(embed=warning_embed("You must be in a voice channel!"))
     if not ctx.voice_client:
         await join(ctx)
     if not ctx.voice_client:
@@ -1799,10 +1853,12 @@ async def play(ctx, *, query):
     try:
         song = await get_song_info(query)
     except Exception as e:
-        return await ctx.send(f"Couldn't load this track: {e}")
+        return await ctx.send(
+            embed=error_embed(f"Couldn't load this track:\n```py\n{e}\n```", title="Track Load Failed")
+        )
 
     if not song.get("webpage_url"):
-        return await ctx.send("⚠️ Couldn't resolve that track.")
+        return await ctx.send(embed=warning_embed("Couldn't resolve that track.", title="Track Not Found"))
 
     queue_song = {
         "url": song["webpage_url"],
@@ -1820,12 +1876,34 @@ async def play(ctx, *, query):
 
     if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
         if song.get("webpage_url"):
-            await ctx.send(f"➕ Added to queue: **[{song['title']}]({song['webpage_url']})**")
+            await ctx.send(
+                embed=success_embed(
+                    f"Added to queue: **[{song['title']}]({song['webpage_url']})**",
+                    title="Queued"
+                )
+            )
         else:
-            await ctx.send(f"➕ Added to queue: **{song['title']}**")
+            await ctx.send(
+                embed=success_embed(
+                    f"Added to queue: **{song['title']}**",
+                    title="Queued"
+                )
+            )
     else:
         await play_next(ctx)
     return None
+
+@play.error
+async def play_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        return await ctx.send(
+            embed=warning_embed(
+                "Use `;play <song name or url>`",
+                title="Missing Argument"
+            )
+        )
+
+    raise error
 
 @bot.command()
 async def pause(ctx):
@@ -1834,10 +1912,10 @@ async def pause(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.pause()
         paused_at = time.monotonic()
-        await ctx.send("⏸️ Playback has been paused.")
+        await ctx.send(embed=info_embed("Playback has been paused.", title="Paused"))
         await update_now_playing_embed()
     else:
-        await ctx.send("⚠️ No song is playing!")
+        await ctx.send(embed=warning_embed("No song is playing!", title="Nothing Playing"))
 
 @bot.command()
 async def resume(ctx):
@@ -1847,10 +1925,10 @@ async def resume(ctx):
         if paused_at is not None:
             paused_total += time.monotonic() - paused_at
             paused_at = None
-        await ctx.send("▶️ Playback has been resumed.")
+        await ctx.send(embed=success_embed("Playback has been resumed.", title="Resumed"))
         await update_now_playing_embed()
     else:
-        await ctx.send("⚠️ No song is paused!")
+        await ctx.send(embed=warning_embed("No song is paused!", title="Nothing Paused"))
 
 @bot.command()
 async def skip(ctx):
@@ -1859,9 +1937,9 @@ async def skip(ctx):
     if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
         skip_once = True
         ctx.voice_client.stop()
-        await ctx.send("⏭️ Skipped the song.")
+        await ctx.send(embed=info_embed("Skipped the song.", title="Skipped"))
     else:
-        await ctx.send("⚠️ Nothing is playing!")
+        await ctx.send(embed=warning_embed("Nothing is playing!", title="Nothing Playing"))
 
 @bot.command()
 async def queue(ctx):
@@ -1871,7 +1949,7 @@ async def queue(ctx):
         return text if len(text) <= limit else text[:limit - 3] + "..."
 
     if not current_song and not song_queue:
-        return await ctx.send("📭 Queue is empty!")
+        return await ctx.send(embed=warning_embed("Queue is empty!", title="Empty Queue"))
 
     lines = []
 
@@ -1900,11 +1978,11 @@ async def queue(ctx):
 @bot.command()
 async def lyrics(ctx):
     if current_song is None:
-        return await ctx.send("⚠️ Nothing is playing!")
+        return await ctx.send(embed=warning_embed("Nothing is playing!", title="Lyrics Unavailable"))
 
     data = await fetch_lyrics_data(current_song)
     if data is None:
-        return await ctx.send("⚠️ Couldn't find lyrics for the current track.")
+        return await ctx.send(embed=warning_embed("Couldn't find lyrics for the current track.", title="Lyrics Not Found"))
 
     embed = build_lyrics_embed(data, truncated=True)
     await ctx.send(embed=embed)
@@ -1940,15 +2018,25 @@ async def loop(ctx, mode: str = None):
         elif mode in ("off", "false", "no", "0"):
             loop_song = False
         else:
-            return await ctx.send("⚠️ Use `;loop`, `;loop on`, or `;loop off`.")
+            return await ctx.send(
+                embed=warning_embed(
+                    "Use `;loop`, `;loop on`, or `;loop off`.",
+                    title="Invalid Usage"
+                )
+            )
 
-    await ctx.send(f"🔁 Loop is now **{'ON' if loop_song else 'OFF'}**")
+    await ctx.send(
+        embed=info_embed(
+            f"Loop is now **{'ON' if loop_song else 'OFF'}**.",
+            title="Loop Updated"
+        )
+    )
     await update_now_playing_embed()
 
 @bot.command()
 async def shuffle(ctx):
     random.shuffle(song_queue)
-    await ctx.send("🔀 Queue shuffled.")
+    await ctx.send(embed=info_embed("Queue shuffled.", title="Shuffled"))
     await update_now_playing_embed()
 
 @bot.command()
@@ -1957,9 +2045,9 @@ async def volume(ctx, volume: int):
         if not isinstance(ctx.voice_client.source, discord.PCMVolumeTransformer):
             ctx.voice_client.source = discord.PCMVolumeTransformer(ctx.voice_client.source)
         ctx.voice_client.source.volume = volume / 100
-        await ctx.send(f"🔊 Volume set to {volume}%")
+        await ctx.send(embed=success_embed(f"Volume set to {volume}%.", title="Volume Updated"))
     else:
-        await ctx.send("⚠️ No song is playing!")
+        await ctx.send(embed=warning_embed("No song is playing!", title="Nothing Playing"))
 
 @bot.command()
 async def slowed(ctx, mode: str | None = None):
@@ -1974,12 +2062,22 @@ async def slowed(ctx, mode: str | None = None):
         elif mode in ("off", "false", "no", "0"):
             slowed_mode = False
         else:
-            return await ctx.send("⚠️ Use `;slowed`, `;slowed on`, or `;slowed off`")
+            return await ctx.send(
+                embed=warning_embed(
+                    "Use `;slowed`, `;slowed on`, or `;slowed off`.",
+                    title="Invalid Usage"
+                )
+            )
 
     if slowed_mode:
         sped_mode = False
 
-    await ctx.send(f"🐢 Slowed mode is now **{'ON' if slowed_mode else 'OFF'}**")
+    await ctx.send(
+        embed=info_embed(
+            f"Slowed mode is now **{'ON' if slowed_mode else 'OFF'}**.",
+            title="Mode Updated"
+        )
+    )
 
     vc = cast(discord.VoiceClient | None, ctx.voice_client)
     if vc is None or current_song is None:
@@ -1991,11 +2089,21 @@ async def slowed(ctx, mode: str | None = None):
     try:
         fresh_song = await get_song_info(current_song["url"])
     except Exception as e:
-        return await ctx.send(f"⚠️ Couldn't reload the current track: {e}")
+        return await ctx.send(
+            embed=error_embed(
+                f"Couldn't reload the current track:\n```py\n{e}\n```",
+                title="Reload Failed"
+            )
+        )
 
     audio_url = fresh_song.get("audio_url")
     if not audio_url:
-        return await ctx.send("⚠️ Couldn't rebuild the current stream.")
+        return await ctx.send(
+            embed=error_embed(
+                "Couldn't rebuild the current stream.",
+                title="Stream Rebuild Failed"
+            )
+        )
 
     position = get_current_playback_position()
 
@@ -2041,12 +2149,22 @@ async def sped(ctx, mode: str = None):
         elif mode in ("off", "false", "no", "0"):
             sped_mode = False
         else:
-            return await ctx.send("⚠️ Use `;sped`, `;sped on`, or `;sped off`.")
+            return await ctx.send(
+                embed=warning_embed(
+                    "Use `;sped`, `;sped on`, or `;sped off`.",
+                    title="Invalid Usage"
+                )
+            )
 
     if sped_mode:
         slowed_mode = False
 
-    await ctx.send(f"⚡ Sped mode is now **{'ON' if sped_mode else 'OFF'}**")
+    await ctx.send(
+        embed=info_embed(
+            f"Sped mode is now **{'ON' if sped_mode else 'OFF'}**.",
+            title="Mode Updated"
+        )
+    )
 
     if not ctx.voice_client or not current_song:
         return
@@ -2057,11 +2175,21 @@ async def sped(ctx, mode: str = None):
     try:
         fresh_song = await get_song_info(current_song["url"])
     except Exception as e:
-        return await ctx.send(f"⚠️ Couldn't reload the current track: {e}")
+        return await ctx.send(
+            embed=error_embed(
+                f"Couldn't reload the current track:\n```py\n{e}\n```",
+                title="Reload Failed"
+            )
+        )
 
     audio_url = fresh_song.get("audio_url")
     if not audio_url:
-        return await ctx.send("⚠️ Couldn't rebuild the current stream.")
+        return await ctx.send(
+            embed=error_embed(
+                "Couldn't rebuild the current stream.",
+                title="Stream Rebuild Failed"
+            )
+        )
 
     position = get_current_playback_position()
 
@@ -2108,7 +2236,37 @@ async def safe_disconnect(ctx):
     if ctx.voice_client and ctx.voice_client.is_connected():
         await ctx.voice_client.disconnect()
         now_playing_message = None
-        await ctx.send(embed=status_embed("👋 Disconnected from the voice channel"))
+        await ctx.send(embed=info_embed("Disconnected from the voice channel", title="Disconnected"))
+
+@bot.event
+async def on_command_error(ctx, error):
+    if ctx.command and ctx.command.has_error_handler():
+        return
+
+    if isinstance(error, commands.MissingRequiredArgument):
+        if ctx.command and ctx.command.qualified_name == "play":
+            return await ctx.send(
+                embed=warning_embed(
+                    "Use `;play <song name or url>`",
+                    title="Missing Argument"
+                )
+            )
+        return await ctx.send(
+            embed=warning_embed(
+                f"Missing required argument: `{error.param.name}`.",
+                title="Missing Argument"
+            )
+        )
+
+    if isinstance(error, commands.BadArgument):
+        return await ctx.send(
+            embed=warning_embed(
+                "One of the arguments is invalid. Check ;help [command] and try again.",
+                title="Invalid Argument"
+            )
+        )
+    raise error
+
 
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
