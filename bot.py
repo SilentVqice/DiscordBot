@@ -419,14 +419,18 @@ async def on_ready():
         await update_member_count(guild)
     await setup_reaction_message()
 
-# USER MENTION FUN X3 ----------------------------------------------------------------------------------------------
+# RANDOM FUN STUFF -----------------------------------------------------------------------------------------------
+@bot.command()
+async def support(ctx):
+    await ctx.send("🏳️‍⚧️")
+
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
         return
     special_user_responses = {
         979934316429738035: "Mwah",
-        812269541731074078: "Cutest girl :3",
+        812269541731074078: "<3",
         465610916873109504: "👑"
     }
 
