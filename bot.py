@@ -9,6 +9,7 @@ import random
 import html
 import sys
 import time
+import re
 import yt_dlp as youtube_dl
 import yt_dlp.utils as ytdlp_utils
 from pathlib import Path
@@ -961,6 +962,7 @@ loop_song = False
 current_song = None
 skip_once = False
 now_playing_message = None
+now_playing_updater = None
 slowed_mode = False
 sped_mode = False
 play_started_at = None
@@ -982,7 +984,7 @@ async def get_song_info(query):
         if isinstance(first, dict):
             info = cast(dict[str, Any], first)
 
-    webpage_url = info.get("webpage_url") or info.get("orginal_url") or query
+    webpage_url = info.get("webpage_url") or info.get("original_url") or query
 
     return {
         "query": query,
@@ -1005,9 +1007,12 @@ def build_now_playing_embed(song):
     uploader = song.get("uploader") or "Unknown"
     views = song.get("views")
     likes = song.get("likes")
+    requester = song.get("requester")
 
-    minutes, seconds = divmod(duration, 60)
-    duration_text = f"{minutes}:{seconds:02d}"
+    position = get_current_playback_position()
+    progress_bar = build_progress_bar(position, duration)
+    duration_text = format_time(duration) if duration > 0 else "LIVE"
+    elapsed_text = format_time(position)
 
     if paused_at is None:
         status_text = "Playing"
@@ -1042,6 +1047,15 @@ def build_now_playing_embed(song):
     if likes is not None:
         embed.add_field(name="👍 Likes", value=f"{likes:,}", inline=True)
 
+    if requester is not None:
+        embed.add_field(name="🙋 Requester", value=requester.mention, inline=True)
+
+    embed.add_field(
+        name="📍 Progress",
+        value=f"`{elapsed_text} / {duration_text}`\n`{progress_bar}`",
+        inline=False
+    )
+
     if thumbnail:
         embed.set_image(url=thumbnail)
 
@@ -1062,10 +1076,41 @@ async def update_now_playing_embed():
     except Exception as e:
         print(f"Failed to update now playing embed: {e}")
 
+async def now_playing_progress_loop(song_url: str):
+    while True:
+        await asyncio.sleep(5)
+
+        if now_playing_message is None or current_song is None:
+            break
+        if current_song.get("url") != song_url:
+            break
+
+        vc = None
+        if now_playing_message.guild:
+            vc = now_playing_message.guild.voice_client
+
+        if vc is None or not vc.is_connected():
+            break
+
+        if not (vc.is_playing() or vc.is_paused()):
+            break
+
+        try:
+            await update_now_playing_embed()
+        except Exception:
+            break
+
 class MusicControls(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=300)
         self.message = None
+
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                if str(item.emoji) == "🔁":
+                    item.label = f"Loop: {'On' if loop_song else 'Off'}"
+                elif str(item.emoji) == "⚙️":
+                    item.label = f"Mode: {get_mode_text()}"
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         vc = interaction.guild.voice_client if interaction.guild else None
@@ -1088,7 +1133,12 @@ class MusicControls(discord.ui.View):
 
     async def on_timeout(self):
         for item in self.children:
-            item.disabled = True
+            if isinstance(item, discord.ui.Button):
+                if str(item.emoji) == "🔁":
+                    item.label = f"Loop: {'On' if loop_song else 'Off'}"
+                elif str(item.emoji) == "⚙️":
+                    item.label = f"Mode: {get_mode_text()}"
+                item.disabled = True
 
         if self.message:
             try:
@@ -1124,7 +1174,7 @@ class MusicControls(discord.ui.View):
             view=self
         )
 
-    @discord.ui.button(label="Skip", emoji="⏭️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Skip", emoji="⏭️", style=discord.ButtonStyle.primary)
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         global skip_once
 
@@ -1137,10 +1187,46 @@ class MusicControls(discord.ui.View):
         await interaction.response.defer()
         vc.stop()
 
+    @discord.ui.button(label="Mode", emoji="⚙️", style=discord.ButtonStyle.primary)
+    async def mode_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        global slowed_mode, sped_mode
+        vc = interaction.guild.voice_client if interaction.guild else None
+        if vc is None or current_song is None:
+            return await interaction.response.send_message(
+                "⚠️ Nothing is playing.",
+                ephemeral=True
+            )
+
+        if not slowed_mode and not sped_mode:
+            slowed_mode = True
+            sped_mode = False
+        elif slowed_mode:
+            slowed_mode = False
+            sped_mode = True
+        else:
+            slowed_mode = False
+            sped_mode = False
+
+        ok, error_message = await apply_current_mode(vc)
+        if not ok:
+            return await interaction.response.send_message(
+                error_message or "⚠️ Couldn't change mode.",
+                ephemeral=True
+            )
+
+        button.label = f"Mode: {get_mode_text()}"
+
+        await interaction.response.edit_message(
+            embed=build_now_playing_embed(current_song),
+            view=self
+        )
+
     @discord.ui.button(label="Loop", emoji="🔁", style=discord.ButtonStyle.success)
     async def loop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         global loop_song
         loop_song = not loop_song
+
+        button.label = f"Loop: {'On' if loop_song else 'Off'}"
 
         await interaction.response.edit_message(
             embed=build_now_playing_embed(current_song),
@@ -1149,7 +1235,7 @@ class MusicControls(discord.ui.View):
 
     @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        global song_queue, current_song, now_playing_message
+        global song_queue, current_song, now_playing_message, now_playing_updater
         global loop_song, play_started_at, paused_at, paused_total, skip_once
 
         vc = interaction.guild.voice_client
@@ -1165,12 +1251,16 @@ class MusicControls(discord.ui.View):
         paused_at = None
         paused_total = 0.0
 
+        if now_playing_updater:
+            now_playing_updater.cancel()
+            now_playing_updater = None
+
         for item in self.children:
             item.disabled = True
 
         await interaction.response.edit_message(
-            content="⏹ Playback stopped.",
-            embed=None,
+            content=None,
+            embed=status_embed("⏹️ Playback stopped.", discord.Color.red()),
             view=self
         )
 
@@ -1223,8 +1313,182 @@ def get_current_playback_position():
 
     return max(0.0, elapsed)
 
+def format_time(seconds: float | int) -> str:
+    seconds = max(0, int(seconds))
+    minutes, secs = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return (f"{minutes}:{secs:02d}")
+
+def build_progress_bar(position: float, duration: int, length: int = 16) -> str:
+    if duration <= 0:
+        return "🔴 LIVE"
+
+    position = max(0.0, min(position, float(duration)))
+    ratio = position / duration if duration else 0.0
+    filled = int(ratio * length)
+
+    if filled >= length:
+        filled = length - 1
+
+    bar = "█" * filled + "🔘" + "─" * (length - filled - 1)
+    return bar
+
+def get_mode_text() -> str:
+    if slowed_mode:
+        return "Slowed"
+    if sped_mode:
+        return "Sped"
+    return "Normal"
+
+async def apply_current_mode(vc: discord.VoiceClient) -> tuple[bool, str | None]:
+    global play_started_at, paused_at, paused_total, current_song
+
+    if current_song is None:
+        return False, "⚠️ Nothing is loaded."
+
+    if not (vc.is_playing() or vc.is_paused()):
+        return False, "⚠️ Nothing is playing."
+
+    try:
+        fresh_song = await get_song_info(current_song["url"])
+    except Exception as e:
+        return False, f"⚠️ Couldn't reload the current track: {e}"
+
+    audio_url = fresh_song.get("audio_url")
+    if not audio_url:
+        return False, "⚠️ Couldn't rebuild the current stream."
+
+    position = get_current_playback_position()
+    was_paused = vc.is_paused()
+
+    if was_paused:
+        vc.resume()
+        if paused_at is not None:
+            paused_total += time.monotonic() - paused_at
+            paused_at = None
+
+    new_source = make_audio_source(
+        audio_url,
+        start_at=position,
+        slowed=slowed_mode,
+        sped=sped_mode
+    )
+
+    old_source = vc.source
+    vc.source = new_source
+
+    try:
+        if old_source:
+            old_source.cleanup()
+    except Exception:
+        pass
+
+    play_started_at = time.monotonic() - position
+    paused_at = None
+
+    if was_paused:
+        vc.pause()
+        paused_at = time.monotonic()
+    return True, None
+
+def status_embed(
+    description:str,
+    color: discord.Color = discord.Color.blurple()
+) -> discord.Embed:
+    return discord.Embed(description=description, colour=color)
+
+def clean_lyrics_title(title: str) -> str:
+    title = re.sub(
+        r"\s*[\[(](?:official|lyrics?|lyric video|audio|video|visualizer|sped up|slowed|reverb|nightcore).*?[\])]",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = title.replace("|", "-")
+    return " ".join(title.split()).strip(" -")
+
+def guess_artist_and_track(song: dict[str, Any]) -> tuple[str, str]:
+    raw_title = clean_lyrics_title(song.get("title") or "")
+    uploader = (song.get("uploader") or "").replace(" - Topic", "").replace("VEVO", "").strip()
+
+    if " - " in raw_title:
+        artist, track = raw_title.split(" - ", 1)
+        artist = artist.strip()
+        track = track.strip()
+        if artist and track:
+            return artist, track
+    return uploader, raw_title
+
+async def fetch_lyrics_data(song: dict[str, Any]) -> dict[str, str] | None:
+    artist, track = guess_artist_and_track(song)
+    duration = int(song.get("duration") or 0)
+
+    headers = {"User-Agent": "DiscordMusicBot/1.0"}
+
+    async with aiohttp.ClientSession(headers=headers) as session:
+        params = {"track_name": track}
+        if artist:
+            params["artist_name"] = artist
+        if duration > 0:
+            params["duration"] = duration
+
+        async with session.get("https://lrclib.net/api/get", params=params) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                lyrics = data.get("plainLyrics") or data.get("syncedLyrics")
+                if lyrics:
+                    return {
+                        "artist": data.get("artistName") or artist or "Unknown",
+                        "track": data.get("trackName") or track or song.get("title", "Unknown"),
+                        "lyrics": lyrics.strip(),
+                    }
+
+        search_params = {"track_name": track}
+        if artist:
+            search_params["artist_name"] = artist
+
+        async with session.get("https://lrclib.net/api/search", params=search_params) as resp:
+            if resp.status == 200:
+                results = await resp.json()
+                if isinstance(results, list):
+                    for item in results:
+                        lyrics = item.get("plainLyrics") or item.get("syncedLyrics")
+                        if lyrics:
+                            return {
+                                "artist": item.get("artistName") or artist or "Unknown",
+                                "track": item.get("trackName") or track or song.get("title", "Unknown"),
+                                "lyrics": lyrics.strip(),
+                            }
+    return None
+
+def trim_lyrics(text: str, limit: int = 3500) -> tuple[str, bool]:
+    text = text.strip()
+    if len(text) <= limit:
+        return text, False
+    return text[: limit - 3].rstrip() + "...", True
+
+
+def build_lyrics_embed(data: dict[str, str], *, truncated: bool = False) -> discord.Embed:
+    lyrics_text, was_trimmed = trim_lyrics(data["lyrics"])
+
+    embed = discord.Embed(
+        title=f"🎤 Lyrics — {data['track']}",
+        description=lyrics_text,
+        colour=discord.Color.purple(),
+    )
+    embed.add_field(name="Artist", value=data["artist"], inline=True)
+
+    if truncated or was_trimmed:
+        embed.set_footer(text="Lyrics were truncated to fit in one message.")
+
+    return embed
+
+
 async def play_next(ctx):
-    global loop_song, current_song, now_playing_message
+    global loop_song, current_song, now_playing_message, now_playing_updater
     global play_started_at, paused_at, paused_total, skip_once
 
     if not ctx.voice_client or not ctx.voice_client.is_connected():
@@ -1301,10 +1565,17 @@ async def play_next(ctx):
         except Exception:
             pass
 
+    if now_playing_updater:
+        now_playing_updater.cancel()
+        now_playing_updater = None
+
     view = MusicControls()
     now_playing_message = await ctx.send(embed=embed, view=view)
     view.message = now_playing_message
 
+    now_playing_updater = asyncio.create_task(
+        now_playing_progress_loop(current_song["url"])
+    )
 @bot.command()
 async def join(ctx):
     if ctx.author.voice:
@@ -1312,7 +1583,7 @@ async def join(ctx):
             return await ctx.send(f"Voice support is missing. Install `PyNaCl` and `davey`, then restart the bot.\n{voice_runtime_info()}")
         try:
             await ctx.author.voice.channel.connect()
-            await ctx.send("🔊 Joined your voice channel!")
+            await ctx.send(embed=status_embed("🔊 Connected to your voice channel!"))
         except RuntimeError as e:
             return await ctx.send(f"Voice connect failed: {e}\n{voice_runtime_info()}")
     else:
@@ -1365,7 +1636,7 @@ async def pause(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.pause()
         paused_at = time.monotonic()
-        await ctx.send("⏸️ Paused the song")
+        await ctx.send("⏸️ Playback has been paused.")
         await update_now_playing_embed()
     else:
         await ctx.send("⚠️ No song is playing!")
@@ -1378,7 +1649,7 @@ async def resume(ctx):
         if paused_at is not None:
             paused_total += time.monotonic() - paused_at
             paused_at = None
-        await ctx.send("▶️ Resumed the song")
+        await ctx.send("▶️ Playback has been resumed.")
         await update_now_playing_embed()
     else:
         await ctx.send("⚠️ No song is paused!")
@@ -1390,7 +1661,7 @@ async def skip(ctx):
     if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
         skip_once = True
         ctx.voice_client.stop()
-        await ctx.send("⏭️ Skipped the song")
+        await ctx.send("⏭️ Skipped the song.")
     else:
         await ctx.send("⚠️ Nothing is playing!")
 
@@ -1429,9 +1700,25 @@ async def queue(ctx):
     await ctx.send(embed=embed)
 
 @bot.command()
+async def lyrics(ctx):
+    if current_song is None:
+        return await ctx.send("⚠️ Nothing is playing!")
+
+    data = await fetch_lyrics_data(current_song)
+    if data is None:
+        return await ctx.send("⚠️ Couldn't find lyrics for the current track.")
+
+    embed = build_lyrics_embed(data, truncated=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
 async def leave(ctx):
-    global current_song, now_playing_message
+    global current_song, now_playing_message, now_playing_updater
     global play_started_at, paused_at, paused_total, skip_once
+
+    if now_playing_updater:
+        now_playing_updater.cancel()
+        now_playing_updater = None
 
     song_queue.clear()
     current_song = None
@@ -1463,7 +1750,7 @@ async def loop(ctx, mode: str = None):
 @bot.command()
 async def shuffle(ctx):
     random.shuffle(song_queue)
-    await ctx.send("🔀 Queue shuffled")
+    await ctx.send("🔀 Queue shuffled.")
     await update_now_playing_embed()
 
 @bot.command()
@@ -1614,11 +1901,16 @@ async def sped(ctx, mode: str = None):
     return None
 
 async def safe_disconnect(ctx):
-    global now_playing_message
+    global now_playing_message, now_playing_updater
+
+    if now_playing_updater:
+        now_playing_updater.cancel()
+        now_playing_updater = None
+
     if ctx.voice_client and ctx.voice_client.is_connected():
         await ctx.voice_client.disconnect()
         now_playing_message = None
-        await ctx.send("👋 Left the voice channel")
+        await ctx.send(embed=status_embed("👋 Disconnected from the voice channel"))
 
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
