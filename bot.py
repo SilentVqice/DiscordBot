@@ -1439,6 +1439,7 @@ sped_mode = False
 bassboost_mode = False
 play_started_at = None
 paused_at = None
+autoplay_mode = False
 current_volume = 1.0
 paused_total = 0.0
 
@@ -1472,7 +1473,66 @@ async def get_song_info(query):
         "likes": info.get("like_count"),
     }
 
+async def get_autoplay_song(seed_song: dict[str, Any], requester=None) -> dict[str, Any] | None:
+    title = seed_song.get("title") or ""
+    uploader = seed_song.get("uploader") or ""
+
+    search_query = f"{title} {uploader}".strip()
+    if not search_query:
+        return None
+
+    loop = asyncio.get_running_loop()
+
+    try:
+        info = await loop.run_in_executor(
+            None,
+            lambda: ytdl.extract_info(
+                f"ytsearch5:{search_query}",
+                download=False
+            )
+        )
+    except Exception:
+        return None
+
+    info = cast(dict[str, Any], info)
+    entries = info.get("entries")
+
+    if not isinstance(entries, list):
+        return None
+
+    current_url = seed_song.get("webpage_url") or seed_song.get("url")
+    queued_urls = {song.get("webpage_url") or song.get("url") for song in song_queue}
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        webpage_url = entry.get("webpage_url") or entry.get("original_url")
+        if not webpage_url:
+            continue
+
+        if current_url and webpage_url == current_url:
+            continue
+
+        if webpage_url in queued_urls:
+            continue
+
+        return {
+        "url": webpage_url,
+        "title": entry.get("title", "Unknown"),
+        "webpage_url": webpage_url,
+        "thumbnail": entry.get("thumbnail"),
+        "duration": entry.get("duration") or 0,
+        "uploader": entry.get("uploader") or entry.get("channel") or "Unknown",
+        "views": entry.get("view_count"),
+        "likes": entry.get("like_count"),
+        "requester": requester
+        }
+    return None
+
+
 def build_now_playing_embed(song):
+    global autoplay_mode
     title = song.get("title", "Unknown")
     webpage_url = song.get("webpage_url", "")
     duration = song.get("duration") or 0
@@ -1521,8 +1581,10 @@ def build_now_playing_embed(song):
     embed.add_field(
         name="📍 Progress",
         value=f"`{elapsed_text} / {duration_text}`\n`{progress_bar}`",
-        inline=False
+        inline=True
     )
+
+    embed.add_field(name="♾️ Autoplay", value="ON" if autoplay_mode else "OFF", inline=True)
 
     if thumbnail:
         embed.set_image(url=thumbnail)
@@ -1719,7 +1781,7 @@ class MusicControls(discord.ui.View):
     @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         global song_queue, current_song, now_playing_message, now_playing_updater
-        global loop_song, play_started_at, paused_at, paused_total, skip_once
+        global loop_song, autoplay_mode, play_started_at, paused_at, paused_total, skip_once
 
         vc = interaction.guild.voice_client
         if not vc:
@@ -1732,6 +1794,7 @@ class MusicControls(discord.ui.View):
         song_queue.clear()
         current_song = None
         loop_song = False
+        autoplay_mode = False
         skip_once = False
         play_started_at = None
         paused_at = None
@@ -2023,19 +2086,37 @@ async def play_next(ctx):
         queued_song = current_song
     else:
         skip_once = False
+
         if not song_queue:
-            current_song = None
-            now_playing_message = None
-            await safe_disconnect(ctx)
-            return
+            if autoplay_mode and current_song is not None:
+                auto_song = await get_autoplay_song(current_song, requester=ctx.guild.me if ctx.guild else None)
+                if auto_song is not None:
+                    song_queue.append(auto_song)
+
+            if not song_queue:
+                current_song = None
+                now_playing_message = None
+                await safe_disconnect(ctx)
+                return
+
         queued_song = song_queue.pop(0)
 
     try:
         fresh_song = await get_song_info(queued_song["url"])
     except Exception as e:
         await ctx.send(embed=error_embed(f"Couldn't load this track:\n```py\n{e}\n```"))
+
+        if autoplay_mode and current_song is not None and not song_queue:
+            auto_song = await get_autoplay_song(current_song, requester=ctx.guild.me if ctx.guild else None)
+            if auto_song is not None:
+                song_queue.append(auto_song)
+
         if song_queue:
             await play_next(ctx)
+        else:
+            current_song = None
+            now_playing_message = None
+            await safe_disconnect(ctx)
         return
 
     audio_url = fresh_song.get("audio_url")
@@ -2324,7 +2405,7 @@ async def lyrics(ctx):
 @bot.command()
 async def leave(ctx):
     global current_song, now_playing_message, now_playing_updater
-    global play_started_at, paused_at, paused_total, skip_once
+    global play_started_at, paused_at, paused_total, skip_once, autoplay_mode
 
     if now_playing_updater:
         now_playing_updater.cancel()
@@ -2334,6 +2415,7 @@ async def leave(ctx):
     current_song = None
     now_playing_message = None
     skip_once = False
+    autoplay_mode = False
     play_started_at = None
     paused_at = None
     paused_total = 0.0
@@ -2377,6 +2459,7 @@ async def shuffle(ctx):
     random.shuffle(song_queue)
     await ctx.send(embed=info_embed("Queue shuffled.", title="Shuffled"))
     await update_now_playing_embed()
+
 @bot.command()
 async def remove(ctx, position: int):
     if not song_queue:
@@ -2441,6 +2524,35 @@ async def clear(ctx):
             title="Queue Cleared"
         )
     )
+    await update_now_playing_embed()
+
+@bot.command()
+async def autoplay(ctx, mode: str | None = None):
+    global autoplay_mode
+
+    if mode is None:
+        autoplay_mode = not autoplay_mode
+    else:
+        mode = mode.lower().strip()
+        if mode in ("on", "true", "yes", "1"):
+            autoplay_mode = True
+        elif mode in ("off", "false", "no", "0"):
+            autoplay_mode = False
+        else:
+            return await ctx.send(
+                embed=warning_embed(
+                    "Use `;autoplay`, `;autoplay on`, or `;autoplay off`.",
+                    title="Invalid Usage"
+                )
+            )
+
+    await ctx.send(
+        embed=info_embed(
+            f"Autoplay is now **{'ON' if autoplay_mode else 'OFF'}**.",
+            title="Autoplay Updated"
+        )
+    )
+
     await update_now_playing_embed()
 
 @bot.command()
