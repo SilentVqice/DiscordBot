@@ -14,7 +14,7 @@ import yt_dlp as youtube_dl
 import yt_dlp.utils as ytdlp_utils
 from pathlib import Path
 from PIL import Image, ImageFont, ImageOps
-from discord.ext.commands import Bot
+from discord.ext.commands import Bot, before_invoke
 from dotenv import load_dotenv
 from discord import AllowedMentions
 from discord.ext import commands
@@ -125,6 +125,11 @@ help_data = {
             "usage": ";rps [@user]",
             "description": "Play Rock, Paper, Scrissors against a user or the bot.",
             "example": [";rps", ";rps @user"]
+        },
+        "ttt": {
+            "usage": ";ttt [@user]",
+            "description": "Play Tic Tac Toe against a user or the bot.",
+            "example": [";ttt", ";ttt @user"]
         }
     },
     "Music": {
@@ -993,6 +998,251 @@ async def rps(ctx, opponent: discord.Member = None):
     return None
 
 # TIC TAC TOE ------------------------------------------------------------------------------------------------------
+def build_ttt_embed(status: str, player_x, player_o):
+    embed = discord.Embed(
+        title="❌⭕ Tic Tac Toe",
+        description=status,
+        colour=discord.Color.blurple()
+    )
+    embed.add_field(name="❌ Player X", value=player_x.mention, inline=True)
+    embed.add_field(name="⭕ Player O", value=player_o.mention, inline=True)
+    embed.set_footer(text="Press a square to make your move.")
+    return embed
+
+WIN_COMBINATIONS = [
+    (0, 1, 2),
+    (3, 4, 5),
+    (6, 7, 8),
+    (0, 3, 6),
+    (1, 4, 7),
+    (2, 5, 8),
+    (0, 4, 8),
+    (2, 4, 6),
+]
+
+
+class TicTacToeButton(discord.ui.Button):
+    def __init__(self, position: int):
+        super().__init__(label="\u200b", style=discord.ButtonStyle.secondary, row=position // 3)
+        self.position = position
+
+    async def callback(self, interaction: discord.Interaction):
+        view: TicTacToeView = self.view
+
+        if interaction.user != view.player_x and interaction.user != view.player_o:
+            return await interaction.response.send_message(
+                "You are not part of this game.",
+                ephemeral=True
+            )
+
+        if interaction.user != view.current_player:
+            return await interaction.response.send_message(
+                "It is not your turn.",
+                ephemeral=True
+            )
+
+        if view.board[self.position] is not None:
+            return await interaction.response.send_message(
+                "That spot is already taken.",
+                ephemeral=True
+            )
+
+        await view.make_move(interaction, self.position, interaction.user)
+
+
+class TicTacToeView(discord.ui.View):
+    def __init__(self, player_x: discord.Member, player_o: discord.abc.User, bot_player: bool = False):
+        super().__init__(timeout=120)
+        self.player_x = player_x
+        self.player_o = player_o
+        self.current_player = player_x
+        self.board: list[str | None] = [None] * 9
+        self.bot_player = bot_player
+        self.message: discord.Message | None = None
+
+        for i in range(9):
+            self.add_item(TicTacToeButton(i))
+
+    def get_button(self, position: int) -> TicTacToeButton | None:
+        for item in self.children:
+            if isinstance(item, TicTacToeButton) and item.position == position:
+                return item
+        return None
+
+    def check_winner(self) -> str | None:
+        for a, b, c in WIN_COMBINATIONS:
+            if self.board[a] and self.board[a] == self.board[b] == self.board[c]:
+                return self.board[a]
+        return None
+
+    def is_draw(self) -> bool:
+        return all(cell is not None for cell in self.board)
+
+    def disable_all_buttons(self):
+        for item in self.children:
+            item.disabled = True
+
+    def available_moves(self) -> list[int]:
+        return [i for i, cell in enumerate(self.board) if cell is None]
+
+    def choose_bot_move(self) -> int:
+        for move in self.available_moves():
+            self.board[move] = "O"
+            if self.check_winner() == "O":
+                self.board[move] = None
+                return move
+            self.board[move] = None
+
+        for move in self.available_moves():
+            self.board[move] = "X"
+            if self.check_winner() == "X":
+                self.board[move] = None
+                return move
+            self.board[move] = None
+
+        if 4 in self.available_moves():
+            return 4
+
+        corners = [i for i in [0, 2, 6, 8] if i in self.available_moves()]
+        if corners:
+            return random.choice(corners)
+
+        return random.choice(self.available_moves())
+
+    async def make_move(self, interaction: discord.Interaction, position: int, player: discord.abc.User):
+        symbol = "X" if player == self.player_x else "O"
+        self.board[position] = symbol
+
+        button = self.get_button(position)
+        if button is not None:
+            button.label = symbol
+            button.disabled = True
+            button.style = discord.ButtonStyle.danger if symbol == "X" else discord.ButtonStyle.success
+
+        winner = self.check_winner()
+        if winner:
+            self.disable_all_buttons()
+            await interaction.response.edit_message(
+                embed=build_ttt_embed(f"🎉 {player.mention} wins!", self.player_x, self.player_o),
+                view=self,
+                content=None
+            )
+            self.stop()
+            return
+
+        if self.is_draw():
+            self.disable_all_buttons()
+            await interaction.response.edit_message(
+                embed=build_ttt_embed("It is a draw.", self.player_x, self.player_o),
+                view=self,
+                content=None
+            )
+            self.stop()
+            return
+
+        self.current_player = self.player_o if self.current_player == self.player_x else self.player_x
+        current_symbol = "X" if self.current_player == self.player_x else "O"
+
+        await interaction.response.edit_message(
+            embed=build_ttt_embed(
+                f"It is now {self.current_player.mention}'s turn ({current_symbol}).",
+                self.player_x,
+                self.player_o
+            ),
+            view=self,
+            content=None
+        )
+
+        if self.bot_player and self.current_player == self.player_o and self.message:
+            await self.handle_bot_turn()
+
+    async def handle_bot_turn(self):
+        await asyncio.sleep(1)
+
+        move = self.choose_bot_move()
+        self.board[move] = "O"
+
+        button = self.get_button(move)
+        if button is not None:
+            button.label = "O"
+            button.disabled = True
+            button.style = discord.ButtonStyle.success
+
+        winner = self.check_winner()
+        if winner:
+            self.disable_all_buttons()
+            await self.message.edit(
+                embed=build_ttt_embed(f"🎉 {self.player_o.mention} wins!", self.player_x, self.player_o),
+                view=self,
+                content=None
+            )
+            self.stop()
+            return
+
+        if self.is_draw():
+            self.disable_all_buttons()
+            await self.message.edit(
+                embed=build_ttt_embed("It is a draw.", self.player_x, self.player_o),
+                view=self,
+                content=None
+            )
+            self.stop()
+            return
+
+        self.current_player = self.player_x
+        await self.message.edit(
+            embed=build_ttt_embed(
+                f"It is now {self.player_x.mention}'s turn (X).",
+                self.player_x,
+                self.player_o
+            ),
+            view=self,
+            content=None
+        )
+
+    async def on_timeout(self):
+        self.disable_all_buttons()
+        if self.message:
+            try:
+                await self.message.edit(
+                    embed=build_ttt_embed("Game timed out.", self.player_x, self.player_o),
+                    view=self,
+                    content=None
+                )
+            except Exception:
+                pass
+
+@bot.command()
+async def ttt(ctx, opponent: discord.Member = None):
+    if opponent is None:
+        view = TicTacToeView(ctx.author, ctx.me, bot_player=True)
+        message = await ctx.send(
+            embed=build_ttt_embed(
+                f"It is now {ctx.author.mention}'s turn (X).",
+                ctx.author,
+                ctx.me
+            ),
+            view=view
+        )
+        view.message = message
+        return
+
+    if opponent.bot:
+        return await ctx.send("You cannot use `;ttt @bot`. Use `;ttt` to play against me.")
+
+    if opponent == ctx.author:
+        return await ctx.send("You cannot play against yourself.")
+
+    view = TicTacToeView(ctx.author, opponent, bot_player=False)
+    message = await ctx.send(
+        embed=build_ttt_embed(
+            f"It is now {ctx.author.mention}'s turn (X).",
+            ctx.author,
+            opponent
+        ),
+        view=view
+    )
+    view.message = message
 
 # CONNECT 4 --------------------------------------------------------------------------------------------------------
 class Connect4Button(discord.ui.Button):
@@ -1156,7 +1406,7 @@ async def connect4(ctx, opponent: discord.User = None):
 ytdlp_utils.bug_reports_message = lambda *args, **kwargs: ""
 
 ytdl_format_options: dict[str, Any] = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[acodec=opus]/bestaudio/best",
     "noplaylist": True,
     "quiet": True,
     "default_search": "auto",
@@ -1189,6 +1439,7 @@ sped_mode = False
 bassboost_mode = False
 play_started_at = None
 paused_at = None
+current_volume = 1.0
 paused_total = 0.0
 
 async def get_song_info(query):
@@ -1516,34 +1767,42 @@ def make_audio_source(audio_url, start_at=0.0, slowed=False, sped=False, bassboo
 
     filters = []
 
+    base_resample = "aresample=48000"
+
     if slowed:
         filters.extend([
-            "atempo=0.90",
-            "asetrate=44100*0.90",
-            "aresample=44100",
-            "aecho=0.8:0.88:40:0.08",
+            "atempo=0.92",
+            "asetrate=48000*0.92",
+            "aresample=48000",
+            "aecho=0.7:0.75:30:0.05",
         ])
     elif sped:
         filters.extend([
-            "atempo=1.12",
-            "asetrate=44100*1.12",
-            "aresample=44100",
-            "aecho=0.8:0.88:6:0.08",
+            "atempo=1.08",
+            "asetrate=48000*1.08",
+            "aresample=48000",
+            "treble=g=1.2:f=4500:width_type=o:width=1.0:m=0.35",
         ])
+    else:
+        filters.append("aresample=48000")
 
     if bassboost:
-        filters.extend(["bass=g=4:f=85:w=0.5:m=0.7,volume=0.95"])
+        filters.extend([
+            "bass=g=2.5:f=90:width_type=o:width=1.2:m=0.35",
+            "volume=0.90"
+        ])
 
     if filters:
         options = f'-vn -filter:a "{",".join(filters)}"'
     else:
         options = "-vn"
 
-    return discord.FFmpegPCMAudio(
+    source = discord.FFmpegPCMAudio(
         audio_url,
         before_options=before,
         options=options
     )
+    return discord.PCMVolumeTransformer(source, volume=current_volume)
 
 def get_current_playback_position():
     global play_started_at, paused_at, paused_total
@@ -1803,14 +2062,22 @@ async def play_next(ctx):
         "requester": queued_song.get("requester"),
     }
 
-    source = make_audio_source(
-        audio_url,
-        start_at=0.0,
-        slowed=slowed_mode,
-        sped=sped_mode,
-        bassboost=bassboost_mode
-    )
-
+    try:
+        source = make_audio_source(
+            audio_url,
+            start_at=0.0,
+            slowed=slowed_mode,
+            sped=sped_mode,
+            bassboost=bassboost_mode
+        )
+    except Exception as e:
+        await ctx.send(
+            embed=error_embed(
+                f"Couldn't create the audio source:\n```py\n{e}\n```",
+                title="Audio Source Failed"
+            )
+        )
+        return
 
     def after_playback(error):
         if error:
@@ -1823,7 +2090,16 @@ async def play_next(ctx):
             except Exception as e:
                 print(f"Error in play_next: {e}")
 
-    ctx.voice_client.play(source, after=after_playback)
+    try:
+        ctx.voice_client.play(source, after=after_playback)
+    except Exception as e:
+        await ctx.send(
+            embed=error_embed(
+                f"Playback failed:\n```py\n{e}\n```",
+                title="Playback Failed"
+            )
+        )
+        return
 
     play_started_at = time.monotonic()
     paused_at = None
@@ -2169,10 +2445,24 @@ async def clear(ctx):
 
 @bot.command()
 async def volume(ctx, volume: int):
+    global current_volume
+
+    if volume < 0 or volume > 200:
+        return await ctx.send(
+            embed=warning_embed("Volume must be between `0` and `200`.", title="Invalid Volume")
+        )
+
     if ctx.voice_client and ctx.voice_client.source:
-        if not isinstance(ctx.voice_client.source, discord.PCMVolumeTransformer):
-            ctx.voice_client.source = discord.PCMVolumeTransformer(ctx.voice_client.source)
-        ctx.voice_client.source.volume = volume / 100
+        current_volume = volume / 100
+
+        if isinstance(ctx.voice_client.source, discord.PCMVolumeTransformer):
+            ctx.voice_client.source.volume = current_volume
+        else:
+            ctx.voice_client.source = discord.PCMVolumeTransformer(
+                ctx.voice_client.source,
+                volume=current_volume
+            )
+
         await ctx.send(embed=success_embed(f"Volume set to {volume}%.", title="Volume Updated"))
     else:
         await ctx.send(embed=warning_embed("No song is playing!", title="Nothing Playing"))
@@ -2215,50 +2505,14 @@ async def slowed(ctx, mode: str | None = None):
     if not (vc.is_playing() or vc.is_paused()):
         return
 
-    try:
-        fresh_song = await get_song_info(current_song["url"])
-    except Exception as e:
+    ok, error_message = await apply_current_mode(vc)
+    if not ok:
         return await ctx.send(
             embed=error_embed(
-                f"Couldn't reload the current track:\n```py\n{e}\n```",
-                title="Reload Failed"
+                error_message or "Couldn't apply slowed mode.",
+                title="Mode Change Failed"
             )
         )
-
-    audio_url = fresh_song.get("audio_url")
-    if not audio_url:
-        return await ctx.send(
-            embed=error_embed(
-                "Couldn't rebuild the current stream.",
-                title="Stream Rebuild Failed"
-            )
-        )
-
-    position = get_current_playback_position()
-
-    was_paused = ctx.voice_client.is_paused()
-    if was_paused:
-        ctx.voice_client.resume()
-        if paused_at is not None:
-            paused_total += time.monotonic() - paused_at
-            paused_at = None
-
-    new_source = make_audio_source(
-        audio_url,
-        start_at=position,
-        slowed=slowed_mode,
-        sped=sped_mode,
-        bassboost=bassboost_mode
-    )
-
-    ctx.voice_client.source = new_source
-
-    play_started_at = time.monotonic() - position
-    paused_at = None
-
-    if was_paused:
-        ctx.voice_client.pause()
-        paused_at = time.monotonic()
 
     await update_now_playing_embed()
     return None
@@ -2294,56 +2548,21 @@ async def sped(ctx, mode: str = None):
         )
     )
 
-    if not ctx.voice_client or not current_song:
+    vc = cast(discord.VoiceClient | None, ctx.voice_client)
+    if vc is None or current_song is None:
         return
 
-    if not (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+    if not (vc.is_playing() or vc.is_paused()):
         return
 
-    try:
-        fresh_song = await get_song_info(current_song["url"])
-    except Exception as e:
+    ok, error_message = await apply_current_mode(vc)
+    if not ok:
         return await ctx.send(
             embed=error_embed(
-                f"Couldn't reload the current track:\n```py\n{e}\n```",
-                title="Reload Failed"
+                error_message or "Couldn't apply sped mode.",
+                title="Mode Change Failed"
             )
         )
-
-    audio_url = fresh_song.get("audio_url")
-    if not audio_url:
-        return await ctx.send(
-            embed=error_embed(
-                "Couldn't rebuild the current stream.",
-                title="Stream Rebuild Failed"
-            )
-        )
-
-    position = get_current_playback_position()
-
-    was_paused = ctx.voice_client.is_paused()
-    if was_paused:
-        ctx.voice_client.resume()
-        if paused_at is not None:
-            paused_total += time.monotonic() - paused_at
-            paused_at = None
-
-    new_source = make_audio_source(
-        audio_url,
-        start_at=position,
-        slowed=slowed_mode,
-        sped=sped_mode,
-        bassboost=bassboost_mode
-    )
-
-    ctx.voice_client.source = new_source
-
-    play_started_at = time.monotonic() - position
-    paused_at = None
-
-    if was_paused:
-        ctx.voice_client.pause()
-        paused_at = time.monotonic()
 
     await update_now_playing_embed()
     return None
@@ -2376,56 +2595,21 @@ async def bassboost(ctx, mode: str | None = None):
         )
     )
 
-    if not ctx.voice_client or not current_song:
+    vc = cast(discord.VoiceClient | None, ctx.voice_client)
+    if vc is None or current_song is None:
         return
 
-    if not (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+    if not (vc.is_playing() or vc.is_paused()):
         return
 
-    try:
-        fresh_song = await get_song_info(current_song["url"])
-    except Exception as e:
+    ok, error_message = await apply_current_mode(vc)
+    if not ok:
         return await ctx.send(
             embed=error_embed(
-                f"Couldn't reload the current track:\n```py\n{e}\n```",
-                title="Reload Failed"
+                error_message or "Couldn't apply bassboost mode.",
+                title="Mode Change Failed"
             )
         )
-
-    audio_url = fresh_song.get("audio_url")
-    if not audio_url:
-        return await ctx.send(
-            embed=error_embed(
-                "Couldn't rebuild the current stream.",
-                title="Stream Rebuild Failed"
-            )
-        )
-
-    position = get_current_playback_position()
-
-    was_paused = ctx.voice_client.is_paused()
-    if was_paused:
-        ctx.voice_client.resume()
-        if paused_at is not None:
-            paused_total += time.monotonic() - paused_at
-            paused_at = None
-
-    new_source = make_audio_source(
-        audio_url,
-        start_at=position,
-        slowed=slowed_mode,
-        sped=sped_mode,
-        bassboost=bassboost_mode
-    )
-
-    ctx.voice_client.source = new_source
-
-    play_started_at = time.monotonic() - position
-    paused_at = None
-
-    if was_paused:
-        ctx.voice_client.pause()
-        paused_at = time.monotonic()
 
     await update_now_playing_embed()
     return None
