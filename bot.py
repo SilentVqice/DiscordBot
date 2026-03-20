@@ -2779,6 +2779,4 @@ async def on_command_error(ctx, error):
         )
     raise error
 
-
-
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
