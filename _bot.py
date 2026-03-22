@@ -20,10 +20,9 @@ bot = commands.Bot(command_prefix=";", intents=intents, help_command=None)
 
 async def load_extensions():
     await bot.load_extension("cogs.Music.music")
-
-@bot.event
-async def on_ready():
-    print(f"{bot.user} is online! :3")
+    await bot.load_extension("cogs.Utility.utility")
+    await bot.load_extension("cogs.Moderation.moderation")
+    await bot.load_extension("cogs.Fun.fun")
 
 async def main():
     async with bot:
